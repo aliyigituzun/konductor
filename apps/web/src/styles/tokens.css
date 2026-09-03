@@ -1,0 +1,88 @@
+:root {
+  font-family: Inter, system-ui, -apple-system, sans-serif;
+
+  --bg-app: #f3f4f6;
+  --bg-canvas: #ffffff;
+  --bg-panel: #f7f7f8;
+  --bg-panel-alt: #eef0f2;
+  --text-primary: #0a0a0a;
+  --text-secondary: #525866;
+  --text-tertiary: #757b88;
+  --border-subtle: #dde1e6;
+  --border-strong: #cfd5dc;
+  --success: #1f7a4d;
+  --warning: #a16207;
+  --danger: #b42318;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --shadow-soft: 0 1px 2px rgba(16, 24, 40, 0.06);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.prose { line-height: 1.7; color: var(--text-primary); font-size: 14px; }
+.prose h1 { font-size: 22px; font-weight: 700; margin: 0 0 16px; }
+.prose h2 { font-size: 17px; font-weight: 600; margin: 28px 0 10px; }
+.prose h3 { font-size: 15px; font-weight: 600; margin: 20px 0 8px; }
+.prose h4 { font-size: 13px; font-weight: 600; margin: 16px 0 6px; }
+.prose p { margin-bottom: 12px; }
+.prose ul, .prose ol { padding-left: 20px; margin-bottom: 12px; }
+.prose li { margin-bottom: 4px; }
+.prose strong { font-weight: 600; }
+.prose em { font-style: italic; }
+.prose a { color: #0284c7; }
+.prose code {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.prose pre {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  overflow-x: auto;
+  margin-bottom: 16px;
+}
+.prose pre code { background: none; border: none; padding: 0; font-size: 13px; }
+.prose blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 14px;
+  color: var(--text-secondary);
+  margin: 0 0 12px;
+}
+.prose table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 13px; }
+.prose th {
+  background: var(--bg-panel);
+  border: 1px solid var(--border-subtle);
+  padding: 7px 12px;
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+}
+.prose td { border: 1px solid var(--border-subtle); padding: 7px 12px; }
+.prose hr { border: none; border-top: 1px solid var(--border-subtle); margin: 24px 0; }
+.prose img { max-width: 100%; border-radius: var(--radius-md); }

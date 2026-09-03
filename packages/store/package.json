@@ -1,0 +1,21 @@
+{
+  "name": "@konductor/store",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@konductor/schema": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.10",
+    "typescript": "^5.4.5"
+  }
+}

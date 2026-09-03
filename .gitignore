@@ -1,0 +1,31 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+build/
+*.tsbuildinfo
+
+# konductor local state (per-machine: runs, logs, status, tokens)
+.konductor/
+
+# agent tool local settings
+.claude/settings.local.json
+.claude/local/
+
+# logs
+*.log
+
+# os
+.DS_Store
+Thumbs.db
+
+# editor
+.idea/
+.vscode/
+*.swp
+
+# env
+.env
+.env.*
+!.env.example

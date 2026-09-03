@@ -1,0 +1,68 @@
+{
+  "schema_version": "0.2.0",
+  "project_id": "konductor",
+  "project_name": "konductor",
+  "repo_root": ".",
+  "default_branch": "main",
+  "agent": {
+    "primary": "claude_code"
+  },
+  "agents": {
+    "default_profile": "claude-default",
+    "profiles": [
+      {
+        "id": "claude-default",
+        "title": "Claude Code",
+        "runner": "claude_code",
+        "binary": "claude",
+        "args": [],
+        "default_mcp": true,
+        "default_working_dir": "project_root",
+        "default_env": {},
+        "telemetry": {
+          "provider": "opentelemetry",
+          "mode": "collector"
+        }
+      },
+      {
+        "id": "minimax-working",
+        "title": "minimax-working",
+        "runner": "minimax",
+        "model": "MiniMax-M3",
+        "api_base": "https://api.minimax.io/v1/text/chatcompletion_v2",
+        "api_key_env": "MINIMAX_API_KEY",
+        "token_id": "konductor-minimax",
+        "temperature": 0.2,
+        "default_mcp": false,
+        "default_working_dir": "project_root",
+        "default_env": {},
+        "telemetry": {
+          "provider": "minimax",
+          "mode": "responses"
+        }
+      }
+    ],
+    "prompt_packs": [
+      {
+        "id": "konductor-default",
+        "title": "Konductor Default",
+        "instructions": "Work as the active coding agent for this project. Start by understanding the assigned run context and the current project state before you edit code. Inspect the relevant code paths first, then implement the smallest correct change. If Konductor MCP is available, call get_run_context, get_project_context, and get_current_status at the start. Use write_update after repository inspection, after meaningful implementation steps, and whenever you hit a blocker or scope change. If you complete or materially change the selected feature, call write_status before you finish so the dashboard reflects the real outcome. Do not claim success unless the code changes landed and you either wrote status through MCP or explicitly explain why you could not.",
+        "file_refs": [],
+        "mcp_reminder": "Konductor MCP should be available in this repo. Use it early, keep updates flowing through write_update, and persist the final tracked state with write_status whenever the task outcome changes project status."
+      }
+    ],
+    "skill_profiles": []
+  },
+  "dashboard": {
+    "mode": "local"
+  },
+  "telemetry": {
+    "provider": "opentelemetry",
+    "mode": "collector"
+  },
+  "host": {
+    "port": 4096,
+    "log_retention": 50,
+    "auto_start": false
+  }
+}
