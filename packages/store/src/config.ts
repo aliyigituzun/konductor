@@ -6,11 +6,9 @@ import {
   type KonductorConfig,
   type AgentProfile,
   type PromptPack,
-  type ProjectTokensFile,
   type SkillProfile,
 } from "@konductor/schema";
 import { configPath } from "./paths.js";
-import { findProjectToken, validateTokenProvider } from "./tokens.js";
 
 export const DEFAULT_OTEL_ENV = {
   OTEL_EXPORTER_OTLP_ENDPOINT: "http://localhost:4318",
@@ -38,9 +36,10 @@ export function defaultClaudeProfile(): AgentProfile {
   return {
     id: "claude-default",
     title: "Claude Code",
-    runner: "claude_code",
-    binary: "claude",
+    adapter: "claude_code",
     args: [],
+    mode: "pane",
+    worktree: false,
     default_mcp: true,
     default_working_dir: "project_root",
     default_env: {},
@@ -49,6 +48,38 @@ export function defaultClaudeProfile(): AgentProfile {
       mode: "collector",
     },
   };
+}
+
+/**
+ * Bring a pre-0.3.0 profile forward.
+ *
+ * Profiles used to be a union tagged by `runner`, where "openai" and "minimax" meant
+ * "call an HTTP completions endpoint". That path is gone — it could not stream, be
+ * stopped, or use MCP — so those profiles are dropped rather than silently rewritten
+ * into something that behaves differently. `claude_code` becomes an adapter id.
+ */
+export function migrateProfile(raw: unknown): AgentProfile | null {
+  const profile = (raw ?? {}) as Record<string, unknown>;
+  if (typeof profile["adapter"] === "string") return profile as unknown as AgentProfile;
+
+  const runner = profile["runner"];
+  if (runner !== "claude_code") return null;
+
+  const {
+    runner: _runner,
+    api_base: _apiBase,
+    api_key_env: _apiKeyEnv,
+    token_id: _tokenId,
+    temperature: _temperature,
+    ...rest
+  } = profile;
+
+  return {
+    ...(rest as Record<string, unknown>),
+    adapter: "claude_code",
+    mode: "pane",
+    worktree: false,
+  } as unknown as AgentProfile;
 }
 
 export function normalizeConfig(raw: unknown): KonductorConfig {
@@ -64,16 +95,17 @@ export function normalizeConfig(raw: unknown): KonductorConfig {
     | null;
 
   const fallbackProfile = defaultClaudeProfile();
-  const profiles = existingAgents?.profiles?.length
-    ? existingAgents.profiles
-    : [fallbackProfile];
+  const migrated = (existingAgents?.profiles ?? [])
+    .map(migrateProfile)
+    .filter((profile): profile is AgentProfile => profile !== null);
+  const profiles = migrated.length > 0 ? migrated : [fallbackProfile];
   const promptPacks = existingAgents?.prompt_packs?.length
     ? existingAgents.prompt_packs
     : [defaultPromptPack()];
   const skillProfiles = existingAgents?.skill_profiles ?? [];
 
   const normalized: KonductorConfig = {
-    schema_version: "0.2.0",
+    schema_version: "0.3.0",
     project_id: String(data["project_id"] ?? ""),
     project_name: String(data["project_name"] ?? ""),
     repo_root: String(data["repo_root"] ?? "."),
@@ -88,19 +120,18 @@ export function normalizeConfig(raw: unknown): KonductorConfig {
       provider: "opentelemetry",
       mode: "collector",
     },
-    host: ((data["host"] ?? {
+    host: {
       port: 4096,
       log_retention: 50,
       auto_start: false,
-    }) as KonductorConfig["host"]) ?? {
-      port: 4096,
-      log_retention: 50,
-      auto_start: false,
+      tmux_session: "konductor",
+      ...((data["host"] ?? {}) as Partial<NonNullable<KonductorConfig["host"]>>),
     },
     agents: {
-      default_profile:
-        existingAgents?.default_profile ??
-        (profiles[0]?.id ?? fallbackProfile.id),
+      // A default pointing at a dropped profile would fail every launch.
+      default_profile: profiles.some((p) => p.id === existingAgents?.default_profile)
+        ? existingAgents!.default_profile!
+        : (profiles[0]?.id ?? fallbackProfile.id),
       profiles,
       prompt_packs: promptPacks,
       skill_profiles: skillProfiles,
@@ -122,29 +153,6 @@ export async function readConfig(cwd: string): Promise<KonductorConfig | null> {
 export async function writeConfig(cwd: string, config: KonductorConfig): Promise<void> {
   const path = configPath(cwd);
   await writeFile(path, JSON.stringify(KonductorConfigSchema.parse(config), null, 2), "utf-8");
-}
-
-export function validateAgentTokenBindings(
-  config: KonductorConfig,
-  tokensFile: ProjectTokensFile,
-): string[] {
-  const profiles = config.agents?.profiles ?? [];
-  const errors: string[] = [];
-
-  for (const profile of profiles) {
-    if (profile.runner === "claude_code") continue;
-    if (!profile.token_id) {
-      errors.push(`Profile "${profile.title}" is missing a project token selection.`);
-      continue;
-    }
-    const token = findProjectToken(tokensFile, profile.token_id);
-    const providerError = validateTokenProvider(token, profile.runner);
-    if (providerError) {
-      errors.push(`Profile "${profile.title}": ${providerError}`);
-    }
-  }
-
-  return errors;
 }
 
 export async function ensureProjectMcpConfig(cwd: string): Promise<boolean> {

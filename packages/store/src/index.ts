@@ -7,4 +7,3 @@ export * from "./telemetry.js";
 export * from "./updates.js";
 export * from "./runs.js";
 export * from "./project-info.js";
-export * from "./tokens.js";

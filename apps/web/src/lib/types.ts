@@ -3,8 +3,6 @@ export type {
   KonductorConfig,
   PromptPack,
   ProjectImportantPaths,
-  ProjectToken,
-  ProjectTokensFile,
   StatusSnapshot,
   Phase,
   PhaseItem,
@@ -22,5 +20,4 @@ export type {
   FeatureItemStatus,
   RunSummary,
   SkillProfile,
-  TokenProvider,
 } from "@konductor/schema";

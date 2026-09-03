@@ -5,6 +5,7 @@ import { configPath, repoLocal, globalRegistry, readRegistry, readConfig, hostGl
 import { StatusSnapshotSchema } from "@konductor/schema";
 import { fmt, header, checkMark, warnMark } from "../ui/format.js";
 import { hostFetch } from "./host-client.js";
+import { loadAdapters, tmuxVersion } from "@konductor/agents";
 
 type CheckResult = { label: string; pass: boolean; warn: boolean; message: string };
 
@@ -119,19 +120,65 @@ export async function runDoctor(_args: string[]): Promise<void> {
       }
     }),
 
-    check("Default profile runtime resolves", async () => {
+    check("Default profile resolves to an installed agent", async () => {
       const cfg = await readConfig(cwd);
       const profile = cfg?.agents?.profiles.find((item) => item.id === cfg.agents?.default_profile);
       if (!profile) {
         return { pass: false, message: "No default profile configured." };
       }
-      if (profile.runner !== "claude_code") {
-        return { pass: true, message: `Profile runner ${profile.runner} does not require a local binary.` };
+      const registry = await loadAdapters(cwd);
+      const found = registry.adapters.find((a) => a.manifest.id === profile.adapter);
+      if (!found) {
+        return {
+          pass: false,
+          message: `Profile "${profile.title}" wants adapter "${profile.adapter}", which is not installed.`,
+        };
       }
-      const resolved = Bun.which(profile.binary);
+      const binary = profile.binary ?? found.manifest.binary;
+      const resolved = Bun.which(binary);
       return {
         pass: !!resolved,
-        message: resolved ? `${profile.binary} -> ${resolved}` : `${profile.binary} not found on PATH`,
+        warn: !!resolved && !found.manifest.verified,
+        message: resolved
+          ? `${found.manifest.title}: ${binary} -> ${resolved}` +
+            (found.manifest.verified ? "" : " (adapter flags unverified against the real CLI)")
+          : `${binary} not found on PATH`,
+      };
+    }),
+
+    check("tmux available for pane agents", async () => {
+      const cfg = await readConfig(cwd);
+      const paneProfiles = (cfg?.agents?.profiles ?? []).filter((p) => p.mode === "pane");
+      const version = await tmuxVersion();
+      if (version) return { pass: true, message: version };
+      if (paneProfiles.length === 0) {
+        return { pass: true, warn: true, message: "tmux not installed; no profiles need a pane." };
+      }
+      return {
+        pass: false,
+        message:
+          `tmux is not installed, but ${paneProfiles.length} profile(s) run in a pane. ` +
+          "Install tmux, or set those profiles to headless mode.",
+      };
+    }),
+
+    check("Agent adapter manifests parse", async () => {
+      const registry = await loadAdapters(cwd);
+      if (registry.issues.length === 0) {
+        const unverified = registry.adapters.filter((a) => !a.manifest.verified);
+        return {
+          pass: true,
+          warn: unverified.length > 0,
+          message:
+            `${registry.adapters.length} adapter(s) loaded` +
+            (unverified.length > 0
+              ? `; unverified: ${unverified.map((a) => a.manifest.id).join(", ")}`
+              : ""),
+        };
+      }
+      return {
+        pass: false,
+        message: registry.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
       };
     }),
 

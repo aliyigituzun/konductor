@@ -9,6 +9,32 @@ import {
 } from "@konductor/schema";
 import { hostGlobal, repoLocal } from "./paths.js";
 
+/**
+ * Bring a pre-0.3.0 run summary forward.
+ *
+ * Runs used to record `agent_kind` from a fixed three-value enum. That became an
+ * open `adapter_id`, and pane fields were added. Historical runs of the removed
+ * HTTP-API runners are kept rather than discarded — they really happened, they are
+ * already terminal, and deleting a user's history to tidy a schema is not our call.
+ */
+export function migrateRunSummary(raw: unknown): RunSummary {
+  const data = { ...((raw ?? {}) as Record<string, unknown>) };
+
+  if (data["adapter_id"] === undefined) {
+    data["adapter_id"] = typeof data["agent_kind"] === "string" ? data["agent_kind"] : "claude_code";
+  }
+  delete data["agent_kind"];
+
+  if (data["slug"] === undefined) {
+    // Old runs had no addressable name; derive a stable one from the run id.
+    const id = typeof data["id"] === "string" ? data["id"] : "run";
+    data["slug"] = `run-${id.slice(0, 8)}`;
+  }
+  if (data["transport"] === undefined) data["transport"] = "headless";
+
+  return RunSummarySchema.parse(data);
+}
+
 function repoRunJsonPath(repoPath: string, runId: string): string {
   return join(repoLocal(repoPath).runsDir, `${runId}.json`);
 }
@@ -46,14 +72,14 @@ export async function readRunSummary(repoPath: string, runId: string): Promise<R
   const file = repoRunJsonPath(repoPath, runId);
   if (!existsSync(file)) return null;
   const raw = await readFile(file, "utf-8");
-  return RunSummarySchema.parse(JSON.parse(raw));
+  return migrateRunSummary(JSON.parse(raw));
 }
 
 export async function readGlobalRunSummary(runId: string): Promise<RunSummary | null> {
   const file = globalRunJsonPath(runId);
   if (!existsSync(file)) return null;
   const raw = await readFile(file, "utf-8");
-  return RunSummarySchema.parse(JSON.parse(raw));
+  return migrateRunSummary(JSON.parse(raw));
 }
 
 export async function patchRunSummary(
@@ -99,7 +125,7 @@ export async function listProjectRuns(repoPath: string): Promise<RunSummary[]> {
   for (const file of files) {
     try {
       const raw = await readFile(join(dir, file), "utf-8");
-      runs.push(RunSummarySchema.parse(JSON.parse(raw)));
+      runs.push(migrateRunSummary(JSON.parse(raw)));
     } catch {
       // Skip corrupted entries.
     }
@@ -117,7 +143,7 @@ export async function listGlobalRuns(): Promise<RunSummary[]> {
   for (const file of files) {
     try {
       const raw = await readFile(join(dir, file), "utf-8");
-      runs.push(RunSummarySchema.parse(JSON.parse(raw)));
+      runs.push(migrateRunSummary(JSON.parse(raw)));
     } catch {
       // Skip corrupted entries.
     }

@@ -12,6 +12,7 @@
     "dev": "bun run src/index.ts"
   },
   "dependencies": {
+    "@konductor/agents": "workspace:*",
     "@konductor/host": "workspace:*",
     "@konductor/schema": "workspace:*",
     "@konductor/store": "workspace:*",

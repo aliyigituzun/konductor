@@ -8,7 +8,6 @@ export function importantProjectPaths(repoPath: string): ProjectImportantPaths {
     repo_root: repoPath,
     config_path: configPath(repoPath),
     konductor_dir: repo.dir,
-    tokens_path: repo.tokensFile,
     status_path: repo.currentStatus,
     updates_path: repo.updatesFile,
     telemetry_path: repo.latestTelemetry,

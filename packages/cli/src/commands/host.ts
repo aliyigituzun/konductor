@@ -8,6 +8,7 @@ import {
   startHostProcess,
   waitForHost,
 } from "./host-client.js";
+import { loadAdapters, tmuxVersion } from "@konductor/agents";
 
 async function start(cwd: string): Promise<void> {
   console.log(header("konductor host start"));
@@ -18,12 +19,22 @@ async function start(cwd: string): Promise<void> {
     process.exit(1);
   }
 
-  if (profile.runner === "claude_code") {
-    const resolved = Bun.which(profile.binary);
-    if (!resolved) {
-      console.error(`${fmt.red("✗")} Claude binary not found on PATH: ${fmt.bold(profile.binary)}`);
-      process.exit(1);
-    }
+  const registry = await loadAdapters(cwd);
+  const adapter = registry.adapters.find((item) => item.manifest.id === profile.adapter);
+  if (!adapter) {
+    console.error(`${fmt.red("✗")} Default profile uses unknown adapter ${fmt.bold(profile.adapter)}.`);
+    console.error(`  Run ${fmt.bold("konductor adapters list")} to see what is available.`);
+    process.exit(1);
+  }
+  const binary = profile.binary ?? adapter.manifest.binary;
+  if (!Bun.which(binary)) {
+    console.error(`${fmt.red("✗")} ${adapter.manifest.title} binary not found on PATH: ${fmt.bold(binary)}`);
+    process.exit(1);
+  }
+  if (profile.mode === "pane" && !(await tmuxVersion())) {
+    console.error(`${fmt.red("✗")} tmux is not installed, but the default profile runs in a pane.`);
+    console.error(`  Install tmux, or set the profile mode to ${fmt.bold("headless")}.`);
+    process.exit(1);
   }
 
   if (await isHostRunning()) {

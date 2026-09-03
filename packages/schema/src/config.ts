@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentModeSchema } from "./agent.js";
 
 export const PromptPackSchema = z.object({
   id: z.string(),
@@ -6,22 +7,6 @@ export const PromptPackSchema = z.object({
   instructions: z.string(),
   file_refs: z.array(z.string()).default([]),
   mcp_reminder: z.string().nullable().optional(),
-});
-
-export const TokenProviderSchema = z.enum(["openai", "minimax"]);
-
-export const ProjectTokenSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  provider: TokenProviderSchema,
-  token: z.string().min(1),
-  created_at: z.string().datetime(),
-  updated_at: z.string().datetime(),
-});
-
-export const ProjectTokensFileSchema = z.object({
-  schema_version: z.enum(["0.2.0"]),
-  tokens: z.array(ProjectTokenSchema).default([]),
 });
 
 export const SkillProfileSchema = z.object({
@@ -38,72 +23,45 @@ export const SkillProfileSchema = z.object({
   notes: z.string().optional(),
 });
 
-const ClaudeAgentProfileSchema = z.object({
+/**
+ * A launchable agent configuration. `adapter` names an adapter manifest, which
+ * supplies the binary and its invocation flags; everything here is a project-level
+ * override of that.
+ */
+export const AgentProfileSchema = z.object({
   id: z.string(),
   title: z.string(),
-  runner: z.literal("claude_code"),
+  /** Adapter manifest id, e.g. "claude_code", "codex", "opencode". */
+  adapter: z.string(),
+  /** Override the adapter's executable name. */
+  binary: z.string().optional(),
   model: z.string().optional(),
-  binary: z.string(),
+  /** Extra argv appended after the adapter's own arguments. */
   args: z.array(z.string()).default([]),
+  mode: AgentModeSchema.default("pane"),
+  /** Run this agent in its own git worktree so parallel agents never collide. */
+  worktree: z.boolean().default(false),
   default_mcp: z.boolean().default(true),
   default_working_dir: z.enum(["project_root", "current"]).default("project_root"),
   default_env: z.record(z.string(), z.string()).default({}),
-  telemetry: z.object({
-    provider: z.string(),
-    mode: z.string(),
-  }),
+  telemetry: z
+    .object({
+      provider: z.string(),
+      mode: z.string(),
+    })
+    .optional(),
 });
-
-const OpenAIAgentProfileSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  runner: z.literal("openai"),
-  model: z.string().default("gpt-4.1-mini"),
-  api_base: z.string().url().optional(),
-  api_key_env: z.string().default("OPENAI_API_KEY"),
-  token_id: z.string().optional(),
-  temperature: z.number().min(0).max(2).default(0.2),
-  default_mcp: z.boolean().default(false),
-  default_working_dir: z.enum(["project_root", "current"]).default("project_root"),
-  default_env: z.record(z.string(), z.string()).default({}),
-  telemetry: z.object({
-    provider: z.string(),
-    mode: z.string(),
-  }),
-});
-
-const MinimaxAgentProfileSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  runner: z.literal("minimax"),
-  model: z.string().default("minimax-1"),
-  api_base: z.string().url().optional(),
-  api_key_env: z.string().default("MINIMAX_API_KEY"),
-  token_id: z.string().optional(),
-  temperature: z.number().min(0).max(2).default(0.2),
-  default_mcp: z.boolean().default(false),
-  default_working_dir: z.enum(["project_root", "current"]).default("project_root"),
-  default_env: z.record(z.string(), z.string()).default({}),
-  telemetry: z.object({
-    provider: z.string(),
-    mode: z.string(),
-  }),
-});
-
-export const AgentProfileSchema = z.discriminatedUnion("runner", [
-  ClaudeAgentProfileSchema,
-  OpenAIAgentProfileSchema,
-  MinimaxAgentProfileSchema,
-]);
 
 export const HostConfigSchema = z.object({
   port: z.number().int().min(1).max(65535).default(4096),
   log_retention: z.number().int().positive().default(50),
   auto_start: z.boolean().default(false),
+  /** tmux session that holds this project's agent panes. */
+  tmux_session: z.string().default("konductor"),
 });
 
 export const KonductorConfigSchema = z.object({
-  schema_version: z.enum(["0.1.0", "0.2.0"]),
+  schema_version: z.enum(["0.1.0", "0.2.0", "0.3.0"]),
   project_id: z.string(),
   project_name: z.string(),
   repo_root: z.string(),
@@ -139,7 +97,4 @@ export type KonductorConfig = z.infer<typeof KonductorConfigSchema>;
 export type PromptPack = z.infer<typeof PromptPackSchema>;
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 export type HostConfig = z.infer<typeof HostConfigSchema>;
-export type TokenProvider = z.infer<typeof TokenProviderSchema>;
-export type ProjectToken = z.infer<typeof ProjectTokenSchema>;
-export type ProjectTokensFile = z.infer<typeof ProjectTokensFileSchema>;
 export type SkillProfile = z.infer<typeof SkillProfileSchema>;

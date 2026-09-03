@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { AgentStatusSchema, AgentTransportSchema } from "./agent.js";
 
 export const RunSourceSchema = z.enum(["dashboard", "cli"]);
 export const RunStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "stopped"]);
@@ -12,13 +13,25 @@ export const RunContextSchema = z.object({
 });
 
 export const RunSummarySchema = z.object({
-  schema_version: z.enum(["0.1.0", "0.2.0"]),
+  schema_version: z.enum(["0.1.0", "0.2.0", "0.3.0"]),
   id: z.string(),
   project_id: z.string(),
   repo_path: z.string(),
   profile_id: z.string(),
   profile_title: z.string(),
-  agent_kind: z.enum(["claude_code", "openai", "minimax"]),
+  /** Adapter manifest that drove this run. */
+  adapter_id: z.string(),
+  /** Short human-addressable name, unique among live agents. */
+  slug: z.string(),
+  transport: AgentTransportSchema.default("headless"),
+  /** tmux session and pane, when transport is "tmux". */
+  session_name: z.string().nullable().default(null),
+  pane_id: z.string().nullable().default(null),
+  /** Last observed live status; null once the run is finalized. */
+  agent_status: AgentStatusSchema.nullable().default(null),
+  /** Isolated checkout this agent worked in, when the profile requested one. */
+  worktree_path: z.string().nullable().default(null),
+  branch: z.string().nullable().default(null),
   feature_item_id: z.string().nullable(),
   feature_item_title: z.string().nullable().optional(),
   prompt_excerpt: z.string(),
@@ -41,7 +54,7 @@ export const RunSummarySchema = z.object({
 });
 
 export const HostStateSchema = z.object({
-  schema_version: z.enum(["0.1.0", "0.2.0"]),
+  schema_version: z.enum(["0.1.0", "0.2.0", "0.3.0"]),
   host_id: z.string(),
   started_at: z.string().datetime(),
   port: z.number().int().min(1).max(65535),
@@ -52,7 +65,6 @@ export const ProjectImportantPathsSchema = z.object({
   repo_root: z.string(),
   config_path: z.string(),
   konductor_dir: z.string(),
-  tokens_path: z.string(),
   status_path: z.string(),
   updates_path: z.string(),
   telemetry_path: z.string(),

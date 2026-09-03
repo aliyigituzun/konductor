@@ -10,7 +10,6 @@ import {
   defaultPromptPack,
   ensureProjectMcpConfig,
   DEFAULT_OTEL_ENV,
-  writeProjectTokens,
 } from "@konductor/store";
 import type { KonductorConfig } from "@konductor/schema";
 import { fmt, header } from "../ui/format.js";
@@ -103,7 +102,7 @@ export async function runInit(args: string[]): Promise<void> {
 
   // Write konductor.config.json
   const config: KonductorConfig = {
-    schema_version: "0.2.0",
+    schema_version: "0.3.0",
     project_id: projectId,
     project_name: projectName,
     repo_root: ".",
@@ -116,10 +115,9 @@ export async function runInit(args: string[]): Promise<void> {
     },
     dashboard: { mode: "local" },
     telemetry: { provider: "opentelemetry", mode: "collector" },
-    host: { port: 4096, log_retention: 50, auto_start: false },
+    host: { port: 4096, log_retention: 50, auto_start: false, tmux_session: "konductor" },
   };
   await writeConfig(cwd, config);
-  await writeProjectTokens(cwd, { schema_version: "0.2.0", tokens: [] });
   const wroteMcp = await ensureProjectMcpConfig(cwd);
   if (wroteMcp) {
     console.log(`${fmt.green("✓")} Project MCP config written to .mcp.json`);
@@ -172,13 +170,12 @@ export async function runInit(args: string[]): Promise<void> {
   console.log(`\n${fmt.green("✓")} Initialized ${fmt.bold(projectName)}\n`);
   console.log(`  ${fmt.dim("config:")}    konductor.config.json`);
   console.log(`  ${fmt.dim("status:")}    .konductor/status/current.json`);
-  console.log(`  ${fmt.dim("tokens:")}    .konductor/tokens.json`);
   console.log(`  ${fmt.dim("registry:")}  ~/.konductor/registry.json`);
   console.log(`  ${fmt.dim("telemetry:")} .claude/settings.local.json (OTEL vars)`);
   console.log(`  ${fmt.dim("runs:")}      .konductor/runs/`);
   console.log(`\n${fmt.dim("Next steps:")}`);
-  console.log(`  ${fmt.bold("konductor host start")}  — start the local Claude host`);
-  console.log(`  ${fmt.bold("konductor mcp serve")}   — start the MCP server for Claude`);
+  console.log(`  ${fmt.bold("konductor host start")}  — start the local agent host`);
+  console.log(`  ${fmt.bold("konductor agent start")} — launch a coding agent on a task`);
   console.log(`  ${fmt.bold("konductor doctor")}       — verify your setup`);
   console.log(`  ${fmt.bold("konductor dashboard")}    — open the local dashboard\n`);
 }

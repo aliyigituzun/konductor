@@ -1,8 +1,6 @@
 import type {
   AgentProfile,
   KonductorConfig,
-  ProjectToken,
-  ProjectTokensFile,
   ProjectImportantPaths,
   PromptPack,
   Registry,
@@ -128,7 +126,6 @@ export async function deleteProject(id: string): Promise<void> {
 
 export interface AgentData {
   config: KonductorConfig | null;
-  tokens: ProjectTokensFile;
   active_runs: RunSummary[];
   past_runs: RunSummary[];
 }
@@ -143,7 +140,6 @@ export interface AgentWorkspaceConfig {
 
 export interface AgentWorkspacePayload {
   agents: AgentWorkspaceConfig;
-  tokens: ProjectTokensFile;
 }
 
 export interface StartRunPayload {
@@ -152,6 +148,98 @@ export interface StartRunPayload {
   prompt_packs?: string[];
   feature_item_id?: string | null;
   source?: "dashboard" | "cli";
+  /** Preferred agent name; the host adds a suffix if it is taken. */
+  slug?: string;
+  /** Override the profile's pane/headless mode for this launch. */
+  mode?: "pane" | "headless";
+  /** Override the profile's git-worktree isolation for this launch. */
+  worktree?: boolean;
+}
+
+/** One live agent, as reported by the host's fleet endpoint. */
+export interface FleetAgent {
+  slug: string;
+  run_id: string;
+  project_id: string;
+  adapter_id: string;
+  adapter_title: string;
+  transport: "tmux" | "headless";
+  session_name: string | null;
+  pane_id: string | null;
+  pid: number | null;
+  agent_status: "starting" | "working" | "idle" | "blocked" | "done" | "dead";
+  reason: string;
+  cwd: string | null;
+  worktree_path: string | null;
+  branch: string | null;
+  feature_item_title: string | null;
+  started_at: string | null;
+}
+
+/** One agent Konductor knows how to drive, and whether it is installed here. */
+export interface AdapterInfo {
+  id: string;
+  title: string;
+  binary: string;
+  homepage: string | null;
+  verified: boolean;
+  source: "builtin" | "user" | "project";
+  manifest_path: string | null;
+  modes: string[];
+  mcp: string;
+  telemetry: string;
+  installed: boolean;
+  path: string | null;
+  version: string | null;
+}
+
+export async function fetchFleet(): Promise<{ agents: FleetAgent[] }> {
+  return requestJson<{ agents: FleetAgent[] }>("/api/agents", undefined, "Failed to fetch fleet");
+}
+
+export async function fetchAdapters(projectId: string): Promise<{
+  adapters: AdapterInfo[];
+  issues: Array<{ path: string; message: string }>;
+}> {
+  return requestJson(
+    `/api/project/${projectId}/adapters`,
+    undefined,
+    "Failed to fetch agent adapters",
+  );
+}
+
+export async function sendToAgent(slug: string, text: string): Promise<{ slug: string }> {
+  return requestJson(
+    `/api/agent/${encodeURIComponent(slug)}/send`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    },
+    `Failed to send to ${slug}`,
+  );
+}
+
+export async function readAgentScreen(
+  slug: string,
+  options: { source?: "visible" | "scrollback"; lines?: number } = {},
+): Promise<{ slug: string; text: string }> {
+  const params = new URLSearchParams();
+  if (options.source) params.set("source", options.source);
+  if (options.lines) params.set("lines", String(options.lines));
+  return requestJson(
+    `/api/agent/${encodeURIComponent(slug)}/read?${params.toString()}`,
+    undefined,
+    `Failed to read ${slug}`,
+  );
+}
+
+export async function stopAgent(slug: string): Promise<RunSummary> {
+  return requestJson<RunSummary>(
+    `/api/agent/${encodeURIComponent(slug)}/stop`,
+    { method: "POST" },
+    `Failed to stop ${slug}`,
+  );
 }
 
 export interface CreateFeaturePayload {

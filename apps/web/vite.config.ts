@@ -3,7 +3,7 @@ import react from "@vitejs/plugin-react";
 import { copyFile, mkdir, readFile, readdir, writeFile, rm, appendFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { dirname } from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -12,7 +12,6 @@ import type { Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
   KonductorConfig,
-  ProjectTokensFile,
   RunSummary,
   SkillProfile,
 } from "@konductor/schema";
@@ -75,7 +74,6 @@ function konductorLocalApiPlugin(): Plugin {
             res.end(
               JSON.stringify({
                 config: await readConfigLocal(entry.repo_path),
-                tokens: await readProjectTokensLocal(entry.repo_path),
                 active_runs: runs.filter((run) => run.status === "running" || run.status === "queued"),
                 past_runs: runs.filter((run) => run.status !== "running" && run.status !== "queued"),
               })
@@ -89,7 +87,6 @@ function konductorLocalApiPlugin(): Plugin {
             if (!entry) return;
             const body = JSON.parse(await readRequestBody(req)) as {
               agents?: KonductorConfig["agents"];
-              tokens?: ProjectTokensFile;
             };
             const currentConfig = await readConfigLocal(entry.repo_path);
             if (!currentConfig) {
@@ -112,8 +109,7 @@ function konductorLocalApiPlugin(): Plugin {
               return;
             }
 
-            const tokens = normalizeProjectTokensPayload(body.tokens);
-            const bindingErrors = validateAgentTokenBindingsLocal(nextConfig, tokens);
+            const bindingErrors: string[] = [];
             if (bindingErrors.length > 0) {
               res.statusCode = 400;
               res.end(JSON.stringify({ error: bindingErrors[0], details: bindingErrors }));
@@ -121,14 +117,12 @@ function konductorLocalApiPlugin(): Plugin {
             }
 
             await writeConfigLocal(entry.repo_path, nextConfig);
-            await writeProjectTokensLocal(entry.repo_path, tokens);
             await ensureProjectMcpConfigLocal(entry.repo_path);
 
             const runs = await listProjectRunsLocal(entry.repo_path);
             res.end(
               JSON.stringify({
                 config: await readConfigLocal(entry.repo_path),
-                tokens: await readProjectTokensLocal(entry.repo_path),
                 active_runs: runs.filter((run) => run.status === "running" || run.status === "queued"),
                 past_runs: runs.filter((run) => run.status !== "running" && run.status !== "queued"),
               })
@@ -207,6 +201,58 @@ function konductorLocalApiPlugin(): Plugin {
               headers: { "Content-Type": "application/json" },
               body,
             });
+            res.statusCode = response.status;
+            res.end(response.body);
+            return;
+          }
+
+          // ---- fleet: live agents, proxied straight to the host ------------
+
+          if (req.method === "GET" && req.url === "/api/agents") {
+            const response = await proxyHostRequest("/agents");
+            res.statusCode = response.status;
+            res.end(response.body);
+            return;
+          }
+
+          if (req.method === "GET" && req.url?.match(/^\/api\/project\/[^/]+\/adapters$/)) {
+            const projectId = req.url.split("/api/project/")[1]!.split("/adapters")[0]!;
+            const entry = await getProjectEntry(registryPath, projectId, res);
+            if (!entry) return;
+            const response = await proxyHostRequest(
+              `/adapters?repo=${encodeURIComponent(entry.repo_path)}`,
+            );
+            res.statusCode = response.status;
+            res.end(response.body);
+            return;
+          }
+
+          if (req.method === "POST" && req.url?.match(/^\/api\/agent\/[^/]+\/send$/)) {
+            const slug = req.url.split("/api/agent/")[1]!.split("/send")[0]!;
+            const body = await readRequestBody(req);
+            const response = await proxyHostRequest(`/agents/${slug}/send`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body,
+            });
+            res.statusCode = response.status;
+            res.end(response.body);
+            return;
+          }
+
+          if (req.method === "GET" && req.url?.match(/^\/api\/agent\/[^/]+\/read(\?|$)/)) {
+            const rest = req.url.split("/api/agent/")[1]!;
+            const slug = rest.split("/read")[0]!;
+            const query = rest.includes("?") ? rest.slice(rest.indexOf("?")) : "";
+            const response = await proxyHostRequest(`/agents/${slug}/read${query}`);
+            res.statusCode = response.status;
+            res.end(response.body);
+            return;
+          }
+
+          if (req.method === "POST" && req.url?.match(/^\/api\/agent\/[^/]+\/stop$/)) {
+            const slug = req.url.split("/api/agent/")[1]!.split("/stop")[0]!;
+            const response = await proxyHostRequest(`/agents/${slug}/stop`, { method: "POST" });
             res.statusCode = response.status;
             res.end(response.body);
             return;
@@ -465,13 +511,6 @@ function normalizeAgentsWorkspace(
   };
 }
 
-function normalizeProjectTokensPayload(tokens: ProjectTokensFile | null | undefined): ProjectTokensFile {
-  return {
-    schema_version: "0.2.0",
-    tokens: tokens?.tokens ?? [],
-  };
-}
-
 type HostHealthPayload = {
   ok: boolean;
   running: boolean;
@@ -720,45 +759,6 @@ async function ensureProjectMcpConfigLocal(repoPath: string): Promise<void> {
   await writeFile(mcpPath, JSON.stringify(next, null, 2), "utf-8");
 }
 
-async function readProjectTokensLocal(repoPath: string): Promise<ProjectTokensFile> {
-  const file = join(repoPath, ".konductor", "tokens.json");
-  if (!existsSync(file)) {
-    return { schema_version: "0.2.0", tokens: [] };
-  }
-  return JSON.parse(await readFile(file, "utf-8")) as ProjectTokensFile;
-}
-
-async function writeProjectTokensLocal(repoPath: string, tokens: ProjectTokensFile): Promise<void> {
-  const file = join(repoPath, ".konductor", "tokens.json");
-  await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, JSON.stringify(tokens, null, 2), "utf-8");
-}
-
-function validateAgentTokenBindingsLocal(
-  config: KonductorConfig,
-  tokensFile: ProjectTokensFile,
-): string[] {
-  const errors: string[] = [];
-  for (const profile of config.agents?.profiles ?? []) {
-    if (profile.runner === "claude_code") continue;
-    if (!profile.token_id) {
-      errors.push(`Profile "${profile.title}" is missing a project token selection.`);
-      continue;
-    }
-    const token = tokensFile.tokens.find((entry) => entry.id === profile.token_id) ?? null;
-    if (!token) {
-      errors.push(`Profile "${profile.title}" references a missing project token.`);
-      continue;
-    }
-    if (token.provider !== profile.runner) {
-      errors.push(
-        `Profile "${profile.title}" uses a ${token.provider} token but is configured for ${profile.runner}.`,
-      );
-    }
-  }
-  return errors;
-}
-
 /**
  * Resolve a caller-supplied doc filename against a repo root, refusing anything that
  * escapes it. Returns null when the request is not a markdown file inside the repo.
@@ -830,7 +830,6 @@ function importantProjectPathsLocal(repoPath: string) {
     repo_root: repoPath,
     config_path: join(repoPath, "konductor.config.json"),
     konductor_dir: konductorDir,
-    tokens_path: join(konductorDir, "tokens.json"),
     status_path: join(konductorDir, "status", "current.json"),
     updates_path: join(konductorDir, "updates.jsonl"),
     telemetry_path: join(konductorDir, "telemetry", "latest.json"),
@@ -936,9 +935,36 @@ async function createFeatureLocal(
   };
 }
 
+/**
+ * The host's port, read once at dev-server start.
+ *
+ * WebSocket proxying needs a static target, so a host started on a non-default port
+ * after Vite is already running needs the dashboard restarted. HTTP calls resolve
+ * the port per request and are unaffected.
+ */
+function hostPortAtStartup(): number {
+  try {
+    const statePath = join(homedir(), ".konductor", "host", "state.json");
+    if (!existsSync(statePath)) return 4096;
+    const state = JSON.parse(readFileSync(statePath, "utf-8")) as { port?: number };
+    return typeof state.port === "number" ? state.port : 4096;
+  } catch {
+    return 4096;
+  }
+}
+
 export default defineConfig({
   plugins: [react(), konductorLocalApiPlugin()],
   server: {
     port: 5173,
+    proxy: {
+      // Live terminal stream. The host is loopback-only, so this proxy is how the
+      // browser reaches it at all.
+      "/hostws": {
+        target: `ws://127.0.0.1:${hostPortAtStartup()}`,
+        ws: true,
+        rewrite: (path) => path.replace(/^\/hostws/, ""),
+      },
+    },
   },
 });
