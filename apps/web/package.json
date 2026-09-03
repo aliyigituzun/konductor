@@ -4,12 +4,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
-    "preview": "vite preview",
+    "dev": "bun --bun vite",
+    "build": "tsc && bun --bun vite build",
+    "preview": "bun --bun vite preview",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@konductor/api": "workspace:*",
     "@konductor/schema": "workspace:*",
     "@konductor/store": "workspace:*",
     "react": "^18.3.1",

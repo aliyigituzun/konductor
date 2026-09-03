@@ -1,5 +1,5 @@
 {
-  "name": "@konductor/host",
+  "name": "@konductor/api",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,11 +8,11 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@konductor/agents": "workspace:*",
-    "@konductor/api": "workspace:*",
     "@konductor/schema": "workspace:*",
     "@konductor/store": "workspace:*"
   },

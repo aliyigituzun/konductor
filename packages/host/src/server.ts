@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 import type { ServerWebSocket } from "bun";
 import type {
   AgentAdapterManifest,
@@ -32,6 +32,7 @@ import {
   writeRunLog,
   writeRunSummary,
 } from "@konductor/store";
+import { createApiRouter } from "@konductor/api";
 import {
   HeadlessTransport,
   TmuxTransport,
@@ -1375,8 +1376,49 @@ function handleRequest(
         .catch(jsonError);
     }
 
+    // The dashboard's own API, shared verbatim with the Vite dev server.
+    if (url.pathname.startsWith("/api/")) {
+      return apiRouter.handle(req).then((response) => response ?? json({ error: "Not found" }, 404));
+    }
+
+    if (req.method === "GET") {
+      return serveDashboard(url.pathname).then(
+        (response) => response ?? json({ error: "Not found" }, 404),
+      );
+    }
+
     return json({ error: "Not found" }, 404);
   }
+}
+
+/**
+ * The dashboard's API and static build, served by the host itself.
+ *
+ * This is what lets Konductor be installed rather than cloned: with the API and the
+ * built assets both served here, the dashboard no longer needs a Vite dev server at
+ * runtime.
+ */
+const apiRouter = createApiRouter();
+
+/** Where the built dashboard lives. Overridable so a packaged build can relocate it. */
+const DASHBOARD_DIR =
+  process.env["KONDUCTOR_DASHBOARD_DIR"] ?? join(import.meta.dir, "../../../apps/web/dist");
+
+async function serveDashboard(pathname: string): Promise<Response | null> {
+  if (!existsSync(DASHBOARD_DIR)) return null;
+
+  // Resolve inside the build directory only; a request path must never escape it.
+  const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const target = resolve(DASHBOARD_DIR, relative);
+  const root = resolve(DASHBOARD_DIR);
+  if (target !== root && !target.startsWith(root + sep)) return null;
+
+  const file = Bun.file(target);
+  if (await file.exists()) return new Response(file);
+
+  // Unknown paths fall back to index.html so client-side routes deep-link.
+  const index = Bun.file(join(root, "index.html"));
+  return (await index.exists()) ? new Response(index) : null;
 }
 
 const server = Bun.serve<TerminalSocketData>({
