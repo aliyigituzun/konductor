@@ -9,7 +9,7 @@ Storage access stays behind `@konductor/store`; API response schemas are unchang
 | Data | Current storage | Reason |
 | --- | --- | --- |
 | Project registry | `$KONDUCTOR_HOME/state.sqlite`, `projects` table | Independent keyed upserts avoid rewriting other projects. |
-| Run summaries and counters | Same host database, indexed `runs` table | One authoritative record for CLI, host and MCP; transactional increments; indexed project/time queries. |
+| Run summaries and counters | Same host database, indexed `runs` and `run_feature_items` tables | One authoritative record for CLI, host and MCP; transactional increments; indexed project/time queries and durable multi-feature assignments. |
 | Access-token hashes | Same host database, `access_tokens` table | Credentials are verified centrally; external plaintext tokens are shown once and never persisted. |
 | Authorization audit | Same host database, indexed `token_audit_events` table | Project/identity/action attribution is queryable without scanning logs; the newest 25,000 events are retained. |
 | Project/Profile/host configuration | Same host database, `configuration_scopes` table | General, authentication-readiness, remote-plan, and (for the `host`/`local` scope) port settings need stable scope ownership without rewriting project files. |
@@ -50,7 +50,9 @@ those aggregates into related tables.
   (`packages/store/src/update-tags.ts`); version 8 re-runs that classifier with
   the full rule set and reconstructs feature events that were never logged by
   diffing the status snapshot backups in `.konductor/backups/`
-  (`packages/store/src/update-backfill.ts`). Reconstructed rows carry
+  (`packages/store/src/update-backfill.ts`). Version 10 adds `run_feature_items`
+  and backfills it from historical run payloads so feature-to-agent history remains
+  queryable. Reconstructed rows carry
   `agent: "konductor-migration"`; free-text notes with no recognisable shape are
   filed under `agent` when their author is not Konductor itself.
 - WAL, a five-second busy timeout, and immediate write transactions coordinate

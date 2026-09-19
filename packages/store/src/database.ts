@@ -15,7 +15,7 @@ export function withDatabase<T>(path: string, work: (db: Database) => T): T {
     db.exec("PRAGMA journal_mode = WAL");
     db.exec("PRAGMA foreign_keys = ON");
     const version = db.query<{ user_version: number }, []>("PRAGMA user_version").get()!.user_version;
-    if (version > 9) throw new Error(`Unsupported Konductor database version ${version}: ${path}`);
+    if (version > 10) throw new Error(`Unsupported Konductor database version ${version}: ${path}`);
     if (version < 1) db.transaction(() => {
       db.exec(`
         CREATE TABLE IF NOT EXISTS imports (source TEXT PRIMARY KEY);
@@ -184,6 +184,31 @@ export function withDatabase<T>(path: string, work: (db: Database) => T): T {
         CREATE INDEX IF NOT EXISTS project_spaces_created ON project_spaces(created_at DESC);
         PRAGMA user_version = 9;
       `);
+    }).immediate();
+    // Run bodies remain the authoritative, backwards-compatible record, while
+    // this relation makes multi-feature assignments durable and queryable.
+    if (version < 10) db.transaction(() => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS run_feature_items (
+          run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+          feature_item_id TEXT NOT NULL,
+          PRIMARY KEY(run_id, feature_item_id)
+        );
+        CREATE INDEX IF NOT EXISTS run_feature_items_feature_run
+          ON run_feature_items(feature_item_id, run_id);
+      `);
+      const rows = db.query<{ id: string; body: string }, []>("SELECT id, body FROM runs").all();
+      const insert = db.query("INSERT OR IGNORE INTO run_feature_items (run_id, feature_item_id) VALUES (?, ?)");
+      for (const row of rows) {
+        const raw = JSON.parse(row.body) as { feature_item_id?: unknown; feature_item_ids?: unknown };
+        const ids = Array.isArray(raw.feature_item_ids)
+          ? raw.feature_item_ids.filter((id): id is string => typeof id === "string" && Boolean(id.trim()))
+          : typeof raw.feature_item_id === "string" && raw.feature_item_id.trim()
+            ? [raw.feature_item_id]
+            : [];
+        for (const featureItemId of new Set(ids)) insert.run(row.id, featureItemId);
+      }
+      db.exec("PRAGMA user_version = 10");
     }).immediate();
     return work(db);
   } finally {

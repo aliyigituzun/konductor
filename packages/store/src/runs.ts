@@ -34,6 +34,9 @@ export function migrateRunSummary(raw: unknown): RunSummary {
     data["slug"] = `run-${id.slice(0, 8)}`;
   }
   if (data["transport"] === undefined) data["transport"] = "headless";
+  if (data["feature_item_ids"] === undefined) {
+    data["feature_item_ids"] = typeof data["feature_item_id"] === "string" ? [data["feature_item_id"]] : [];
+  }
   if (typeof data["last_error"] === "string") {
     data["last_error"] = redactSensitiveText(data["last_error"]);
   }
@@ -72,6 +75,9 @@ function putRun(db: Database, summary: RunSummary): RunSummary {
   db.query(`INSERT INTO runs VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
     repo_path = excluded.repo_path, started_at = excluded.started_at, body = excluded.body`)
     .run(parsed.id, resolve(parsed.repo_path), Date.parse(parsed.started_at), JSON.stringify(parsed));
+  db.query("DELETE FROM run_feature_items WHERE run_id = ?").run(parsed.id);
+  const insert = db.query("INSERT INTO run_feature_items (run_id, feature_item_id) VALUES (?, ?)");
+  for (const featureItemId of new Set(parsed.feature_item_ids)) insert.run(parsed.id, featureItemId);
   return parsed;
 }
 

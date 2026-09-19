@@ -293,8 +293,22 @@ test("a failed transaction preserves committed state and newer database versions
     expect(db.query("SELECT * FROM documents").all()).toEqual([]);
   });
   const db = new Database(path);
-  db.exec("PRAGMA user_version = 10");
+  db.exec("PRAGMA user_version = 11");
   db.close();
   expect(() => withDatabase(path, () => null)).toThrow("Unsupported Konductor database version");
 });
 
+test("run feature assignments migrate into the durable relation", () => {
+  const path = repoLocal(dir).database;
+  const db = new Database(path, { create: true });
+  db.exec(`
+    CREATE TABLE runs (id TEXT PRIMARY KEY, repo_path TEXT NOT NULL, started_at INTEGER NOT NULL, body TEXT NOT NULL);
+    PRAGMA user_version = 9;
+  `);
+  db.query("INSERT INTO runs VALUES (?, ?, ?, ?)").run("run-1", dir, 0, JSON.stringify({ feature_item_ids: ["login", "refresh", "login"] }));
+  db.close();
+  withDatabase(path, (migrated) => {
+    expect(migrated.query<{ feature_item_id: string }, []>("SELECT feature_item_id FROM run_feature_items ORDER BY feature_item_id").all())
+      .toEqual([{ feature_item_id: "login" }, { feature_item_id: "refresh" }]);
+  });
+});

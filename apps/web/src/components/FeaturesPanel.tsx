@@ -7,11 +7,10 @@ import { PromptPackField } from "./agents/PromptPackField.js";
 import { itemStatusColor, itemStatusGlyph } from "../styles/ui.js";
 import type { Decision, FeaturePhase, KonductorConfig, RunSummary, StatusSnapshot } from "../lib/types.js";
 import { FeatureDecisions, decisionsForFeature } from "./decisions/FeatureDecisions.js";
-import { EditFeatureDialog } from "./EditFeatureDialog.js";
 import "./Features.css";
 
 interface LaunchPayload {
-  feature_item_id: string;
+  feature_item_ids: string[];
   profile_id: string;
   prompt_packs: string[];
   prompt: string;
@@ -21,6 +20,7 @@ interface FeaturesPanelProps {
   projectId: string;
   snap: StatusSnapshot | null;
   config: KonductorConfig | null;
+  runs: RunSummary[];
   decisions: Decision[];
   onDecisionsChanged: () => Promise<void>;
   onStartRun: (payload: LaunchPayload) => Promise<RunSummary>;
@@ -35,6 +35,46 @@ interface FeaturesPanelProps {
   onCreateCategory: (title: string) => Promise<{ category_id: string }>;
   onSavePhases: (phases: Array<{ id?: string; title: string }>) => Promise<void>;
   onReorderPhases: (phaseIds: string[]) => Promise<void>;
+}
+
+function AgentContextDialog({
+  features,
+  todos,
+  runs,
+  onClose,
+}: {
+  features: Array<{ id: string; title: string; category_title: string; status: string }>;
+  todos: NonNullable<StatusSnapshot["todos"]>;
+  runs: RunSummary[];
+  onClose: () => void;
+}) {
+  return (
+    <div className="k-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <section className="k-dialog ft__agent-context-dialog" role="dialog" aria-modal="true" aria-label="Agent context">
+        <div className="k-dialog__header">
+          Agent context
+          <span className="k-spacer" />
+          <button type="button" className="k-dialog__close" aria-label="Close" onClick={onClose}>×</button>
+        </div>
+        <div className="k-dialog__body ft__agent-context-body">
+          {features.length === 0 ? <p className="k-empty">Select a feature to inspect its agent context.</p> : <>
+            <section>
+              <h2 className="ft__context-heading">Selected features</h2>
+              <ul className="ft__context-list">{features.map((feature) => <li key={feature.id}><strong>{feature.title}</strong><span>{feature.category_title} · {feature.status.replace("_", " ")}</span></li>)}</ul>
+            </section>
+            <section>
+              <h2 className="ft__context-heading">Related to-dos</h2>
+              {todos.length ? <ul className="ft__context-list">{todos.map((todo) => <li key={todo.id}><strong>{todo.title}</strong><span>{todo.status.replace("_", " ")}{todo.description ? ` · ${todo.description}` : ""}</span></li>)}</ul> : <p className="k-empty">No linked to-dos.</p>}
+            </section>
+            <section>
+              <h2 className="ft__context-heading">Previous agents</h2>
+              {runs.length ? <ul className="ft__context-list">{runs.map((run) => <li key={run.id}><strong>{run.profile_title} · {run.slug}</strong><span>{run.status} · {new Date(run.started_at).toLocaleString()}</span></li>)}</ul> : <p className="k-empty">No previous agents worked on these features.</p>}
+            </section>
+          </>}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function EditPhasesDialog({
@@ -168,6 +208,7 @@ export function FeaturesPanel({
   projectId,
   snap,
   config,
+  runs,
   onStartRun,
   onCreateFeature,
   onCreateCategory,
@@ -177,6 +218,9 @@ export function FeaturesPanel({
   onDecisionsChanged,
 }: FeaturesPanelProps) {
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
+  const [featureSelectionEnabled, setFeatureSelectionEnabled] = useState(false);
+  const [selectedFeatureIds, setSelectedFeatureIds] = useState<string[]>([]);
+  const [agentContextOpen, setAgentContextOpen] = useState(false);
   const [selectedProfileId, setSelectedProfileId] = useState(config?.agents?.default_profile ?? "default-profile");
   const [selectedPacks, setSelectedPacks] = useState<string[]>(
     (config?.agents?.prompt_packs ?? []).slice(0, 1).map((pack) => pack.id),
@@ -217,14 +261,29 @@ export function FeaturesPanel({
     [categories, selectedPhaseIds],
   );
   const phaseTitles = useMemo(() => new Map(phases.map((phase) => [phase.id, phase.title])), [phases]);
-  const selectedItem = useMemo(() => {
-    if (!selectedItemId) return null;
-    for (const category of categories) {
-      const item = category.items.find((candidate) => candidate.id === selectedItemId);
-      if (item) return { ...item, category_title: category.title, category_id: category.id };
-    }
-    return null;
-  }, [categories, selectedItemId]);
+  const selectedFeatures = useMemo(() => {
+    const selection = new Set(featureSelectionEnabled ? selectedFeatureIds : (selectedItemId ? [selectedItemId] : []));
+    return categories.flatMap((category) => category.items
+      .filter((item) => selection.has(item.id))
+      .map((item) => ({ ...item, category_title: category.title })));
+  }, [categories, featureSelectionEnabled, selectedFeatureIds, selectedItemId]);
+  const launchFeatureIds = selectedFeatures.map((feature) => feature.id);
+  const relatedTodos = useMemo(() => {
+    const selected = new Set(launchFeatureIds);
+    return (snap?.todos ?? []).filter((todo) => [
+      ...todo.related_feature_item_ids,
+      ...(todo.feature_item_id ? [todo.feature_item_id] : []),
+    ].some((id) => selected.has(id)));
+  }, [launchFeatureIds.join(","), snap?.todos]);
+  const previousRuns = useMemo(() => {
+    const selected = new Set(launchFeatureIds);
+    return runs.filter((run) => {
+      const runFeatureIds = run.feature_item_ids.length > 0
+        ? run.feature_item_ids
+        : run.feature_item_id ? [run.feature_item_id] : [];
+      return runFeatureIds.some((id) => selected.has(id));
+    });
+  }, [launchFeatureIds.join(","), runs]);
 
   useEffect(() => {
     if (categories.length === 0) setSelectedCategoryId("");
@@ -252,8 +311,8 @@ export function FeaturesPanel({
   }, []);
 
   async function handleSubmit() {
-    if (!selectedItem || !prompt.trim()) {
-      setError("Select a feature and enter a prompt.");
+    if (launchFeatureIds.length === 0 || !prompt.trim()) {
+      setError("Select one or more features and enter a prompt.");
       return;
     }
     setSubmitting(true);
@@ -261,7 +320,7 @@ export function FeaturesPanel({
     setLaunchMessage(null);
     try {
       const run = await onStartRun({
-        feature_item_id: selectedItem.id,
+        feature_item_ids: launchFeatureIds,
         profile_id: selectedProfileId,
         prompt_packs: selectedPacks,
         prompt,
@@ -328,6 +387,20 @@ export function FeaturesPanel({
 
   function togglePhase(id: string) {
     setSelectedPhaseIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+  }
+
+  function toggleFeatureSelection(id: string) {
+    setSelectedFeatureIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
+  }
+
+  function toggleFeatureSelectionMode() {
+    setFeatureSelectionEnabled((current) => {
+      if (current) {
+        setSelectedFeatureIds([]);
+        setSelectedItemId(null);
+      }
+      return !current;
+    });
   }
 
   async function handleSavePhases(nextPhases: Array<{ id?: string; title: string }>) {
@@ -438,6 +511,7 @@ export function FeaturesPanel({
           </React.Fragment>
         ))}
         <button type="button" className="ft__phase-add" onClick={() => { setPhaseEditorError(null); setPhaseEditorOpen(true); }}>Edit phases</button>
+        <button type="button" className={`ft__phase-add${featureSelectionEnabled ? " ft__phase-add--active" : ""}`} aria-pressed={featureSelectionEnabled} onClick={toggleFeatureSelectionMode}>Select features</button>
         <span className="k-spacer" />
         <AgentStatusIndicator activeAgents={hostHealth?.running_runs.length ?? 0} hostHealth={hostHealth} hasError={Boolean(error || createError)} />
       </div>
@@ -450,6 +524,7 @@ export function FeaturesPanel({
           onSave={handleSavePhases}
         />
       ) : null}
+      {agentContextOpen ? <AgentContextDialog features={selectedFeatures} todos={relatedTodos} runs={previousRuns} onClose={() => setAgentContextOpen(false)} /> : null}
       {phaseDragGhost ? <div className="ft__phase-drag-ghost" style={{ left: phaseDragGhost.x, top: phaseDragGhost.y }} aria-hidden="true">{phaseDragGhost.title}</div> : null}
 
       <div className="ft__layout">
@@ -477,24 +552,23 @@ export function FeaturesPanel({
                 </div>
                 <div className="ft__items">
                   {category.items.map((item) => (
-                    <button
+                    <div
                       key={item.id}
-                      type="button"
                       className={`ft__item${selectedItemId === item.id ? " ft__item--active" : ""}`}
-                      onClick={() => setSelectedItemId(item.id)}
                     >
-                      <span className="k-glyph" style={{ color: itemStatusColor(item.status) }}>{itemStatusGlyph(item.status)}</span>
-                      <span className="ft__item-title">{item.title}</span>
-                      {item.phase_ids?.[0] && phaseTitles.has(item.phase_ids[0]) ? (
-                        <span className="ft__item-phase">{phaseTitles.get(item.phase_ids[0])}</span>
-                      ) : null}
-                      {(() => {
-                        const linked = decisionsForFeature(decisions, item.id);
-                        if (linked.length === 0) return null;
-                        const open = linked.some((decision) => decision.status === "open");
-                        return <span className={`dc__count${open ? " dc__count--open" : ""}`} title={`${linked.length} decision${linked.length === 1 ? "" : "s"}`}>◆ {linked.length}</span>;
-                      })()}
-                    </button>
+                      {featureSelectionEnabled ? <button type="button" className={`ft__item-select-toggle${selectedFeatureIds.includes(item.id) ? " ft__item-select-toggle--selected" : ""}`} aria-label={`${selectedFeatureIds.includes(item.id) ? "Unselect" : "Select"} ${item.title}`} aria-pressed={selectedFeatureIds.includes(item.id)} onClick={() => toggleFeatureSelection(item.id)} /> : null}
+                      <button type="button" className="ft__item-main" onClick={() => setSelectedItemId(item.id)}>
+                        <span className="k-glyph" style={{ color: itemStatusColor(item.status) }}>{itemStatusGlyph(item.status)}</span>
+                        <span className="ft__item-title">{item.title}</span>
+                        {item.phase_ids?.[0] && phaseTitles.has(item.phase_ids[0]) ? <span className="ft__item-phase">{phaseTitles.get(item.phase_ids[0])}</span> : null}
+                        {(() => {
+                          const linked = decisionsForFeature(decisions, item.id);
+                          if (linked.length === 0) return null;
+                          const open = linked.some((decision) => decision.status === "open");
+                          return <span className={`dc__count${open ? " dc__count--open" : ""}`} title={`${linked.length} decision${linked.length === 1 ? "" : "s"}`}>◆ {linked.length}</span>;
+                        })()}
+                      </button>
+                    </div>
                   ))}
                 </div>
               </section>
@@ -504,28 +578,28 @@ export function FeaturesPanel({
 
         <aside className="ft__launcher">
           <section className="k-section">
-            <div className="k-section__header">Start agent</div>
+            <div className="k-section__header">Start agent<span className="k-spacer" /><button type="button" className="ft__agent-context-trigger" aria-label="Show agent context" title="Show linked to-dos and previous agents" onClick={() => setAgentContextOpen(true)}>i</button></div>
             <div className="k-section__body ft__form">
-              {!selectedItem ? (
+              {launchFeatureIds.length === 0 ? (
                 <p className="k-empty" style={{ padding: 0 }}>Select a feature on the left</p>
               ) : (
                 <>
                   <div className="ft__selected">
-                    <span className="k-glyph" style={{ color: itemStatusColor(selectedItem.status) }}>{itemStatusGlyph(selectedItem.status)}</span>
+                    <span className="k-glyph" style={{ color: itemStatusColor(selectedFeatures[0]!.status) }}>{itemStatusGlyph(selectedFeatures[0]!.status)}</span>
                     <div style={{ minWidth: 0 }}>
-                      <strong>{selectedItem.title}</strong>
-                      <div className="k-faint" style={{ fontSize: 13 }}>{selectedItem.category_title} · {selectedItem.status.replace("_", " ")}</div>
-                      {selectedItem.description ? <div className="k-note" style={{ marginTop: 4 }}>{selectedItem.description}</div> : null}
+                      <strong>{selectedFeatures.length === 1 ? selectedFeatures[0]!.title : `${selectedFeatures.length} selected features`}</strong>
+                      <div className="k-faint" style={{ fontSize: 13 }}>{selectedFeatures.length === 1 ? `${selectedFeatures[0]!.category_title} · ${selectedFeatures[0]!.status.replace("_", " ")}` : "All selected features will be included in this agent brief."}</div>
+                      {selectedFeatures.length === 1 && selectedFeatures[0]!.description ? <div className="k-note" style={{ marginTop: 4 }}>{selectedFeatures[0]!.description}</div> : null}
                     </div>
                   </div>
-                  <FeatureDecisions
+                  {selectedFeatures.length === 1 ? <FeatureDecisions
                     projectId={projectId}
-                    featureItemId={selectedItem.id}
+                    featureItemId={selectedFeatures[0]!.id}
                     decisions={decisions}
                     snap={snap}
                     config={config}
                     onChanged={onDecisionsChanged}
-                  />
+                  /> : null}
                   <div className="k-field">
                     <label className="k-label" htmlFor="ft-profile">Profile</label>
                     <select id="ft-profile" className="k-select" value={selectedProfileId} onChange={(event) => setSelectedProfileId(event.target.value)}>

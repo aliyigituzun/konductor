@@ -13,7 +13,7 @@ export async function composePrompt(
   repoPath: string,
   prompt: string,
   packs: PromptPack[],
-  featureItemId: string | null | undefined,
+  featureItemIds: string[],
   todoId: string | null | undefined,
   decisionId: string | null | undefined,
   runId: string,
@@ -23,7 +23,7 @@ export async function composePrompt(
   source: "dashboard" | "cli",
   mcpEnabled: boolean,
 ): Promise<{ text: string; feature_item_title: string | null }> {
-  const featureContext = await resolveFeatureContext(repoPath, featureItemId);
+  const featureContexts = await Promise.all(featureItemIds.map((featureItemId) => resolveFeatureContext(repoPath, featureItemId)));
   const todoBlock = await resolveTodoContext(repoPath, projectId, todoId);
   const decisionBlock = await resolveDecisionContext(repoPath, decisionId);
   const packBlocks = await Promise.all(
@@ -42,7 +42,7 @@ export async function composePrompt(
 
   const text = [
     `You are running inside a Konductor-managed ${agentTitle} session.`,
-    featureContext.feature_block || null,
+    ...featureContexts.map((context) => context.feature_block).filter(Boolean),
     todoBlock || null,
     decisionBlock || null,
     ...packBlocks,
@@ -52,8 +52,8 @@ export async function composePrompt(
       ? "2. Konductor MCP is expected to be available here. Start by calling get_run_context, get_project_context, and get_current_status."
       : "2. Konductor MCP may not be available. If you cannot use it, say so clearly in your updates and final output.",
     "3. Use write_update after repository inspection, after meaningful implementation steps, and whenever you hit a blocker, permission issue, or scope change.",
-    featureItemId
-      ? "4. If you complete or materially change the selected feature, call write_status before you finish so the dashboard reflects the outcome."
+    featureItemIds.length > 0
+      ? "4. If you complete or materially change any selected feature, call write_status before you finish so the dashboard reflects the outcome."
       : "4. If your work changes project state in a meaningful way, call write_status before you finish so the dashboard reflects the outcome.",
     "5. Do not report success unless the code changes actually landed and you either wrote status through MCP or explicitly explain why you could not.",
     "## Operator Prompt",
@@ -62,7 +62,7 @@ export async function composePrompt(
     `run_id: ${runId}`,
     `profile_id: ${profile.id}`,
     `source: ${source}`,
-    featureItemId ? `feature_item_id: ${featureItemId}` : null,
+    featureItemIds.length > 0 ? `feature_item_ids: ${featureItemIds.join(", ")}` : null,
     todoId ? `todo_id: ${todoId}` : null,
     decisionId ? `decision_id: ${decisionId}` : null,
     "If the Konductor MCP server is available, use it to read project context, write incremental updates, and persist status updates with this run context.",
@@ -72,7 +72,7 @@ export async function composePrompt(
 
   return {
     text,
-    feature_item_title: featureContext.feature_item_title,
+    feature_item_title: featureContexts[0]?.feature_item_title ?? null,
   };
 }
 

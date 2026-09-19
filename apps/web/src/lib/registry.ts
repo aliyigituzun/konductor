@@ -377,6 +377,8 @@ export interface StartRunPayload {
   prompt: string;
   prompt_packs?: string[];
   feature_item_id?: string | null;
+  /** Multiple features selected together in the Features workspace. */
+  feature_item_ids?: string[];
   todo_id?: string | null;
   /** Resolved decision the run carries out; the host adds its outcome to the brief. */
   decision_id?: string | null;

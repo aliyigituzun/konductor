@@ -60,6 +60,8 @@ type LaunchRunRequest = {
   profile_id?: string;
   prompt: string;
   prompt_packs?: string[];
+  /** Feature items selected together from the Features workspace. */
+  feature_item_ids?: string[];
   feature_item_id?: string | null;
   /** To-do whose linked feature and asset context is part of this hand-off. */
   todo_id?: string | null;
@@ -215,7 +217,7 @@ function startupLog(
     `[konductor host] Harness: ${run.adapter_id} · ${run.provider ?? "default provider"} · ${run.model ?? "default model"}`,
     `[konductor host] Source: ${run.source}`,
     `[konductor host] Working directory: ${run.working_directory ?? run.repo_path}`,
-    `[konductor host] Feature: ${run.feature_item_title ?? run.feature_item_id ?? "direct task"}`,
+    `[konductor host] Features: ${run.feature_item_ids.length > 0 ? run.feature_item_ids.join(", ") : "direct task"}`,
     `[konductor host] Prompt packs: ${packs.length > 0 ? packs.map((pack) => pack.id).join(", ") : "(none)"}`,
     `[konductor host] MCP: ${mcpStatus}`,
     `[konductor host] Command: ${run.command}`,
@@ -522,6 +524,31 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
   }
 
   const repoPath = entry.repo_path;
+  if (
+    (body.feature_item_ids !== undefined && (!Array.isArray(body.feature_item_ids) || body.feature_item_ids.some((id) => typeof id !== "string")))
+    || (body.feature_item_id !== undefined && body.feature_item_id !== null && typeof body.feature_item_id !== "string")
+  ) {
+    throw new HostApiError("Selected features must be a list of feature IDs.", {
+      status: 400,
+      code: "INVALID_FEATURE_SELECTION",
+    });
+  }
+  const featureItemIds = [...new Set([
+    ...(body.feature_item_ids ?? []).map((id) => id.trim()).filter(Boolean),
+    ...(body.feature_item_id?.trim() ? [body.feature_item_id.trim()] : []),
+  ])];
+  if (featureItemIds.length > 0) {
+    const status = await readStatus(repoPath);
+    const known = new Set((status?.features ?? []).flatMap((category) => category.items.map((item) => item.id)));
+    const unknown = featureItemIds.filter((id) => !known.has(id));
+    if (unknown.length > 0) {
+      throw new HostApiError(`Selected feature was not found: ${unknown.join(", ")}.`, {
+        status: 400,
+        code: "FEATURE_NOT_FOUND",
+      });
+    }
+  }
+  const primaryFeatureItemId = featureItemIds[0] ?? null;
   const config = await readConfig(repoPath);
   if (!config?.agents) {
     throw new HostApiError("Project has no configured agent profiles.", {
@@ -666,7 +693,7 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     repoPath,
     body.prompt,
     packs,
-    body.feature_item_id,
+    featureItemIds,
     body.todo_id,
     body.decision_id,
     runId,
@@ -709,7 +736,8 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     KONDUCTOR_RUN_ID: runId,
     KONDUCTOR_PROFILE_ID: profile.id,
     KONDUCTOR_AGENT_SLUG: slug,
-    KONDUCTOR_FEATURE_ITEM_ID: body.feature_item_id ?? undefined,
+    KONDUCTOR_FEATURE_ITEM_ID: primaryFeatureItemId ?? undefined,
+    KONDUCTOR_FEATURE_ITEM_IDS: featureItemIds.length > 0 ? featureItemIds.join(",") : undefined,
     KONDUCTOR_TODO_ID: body.todo_id ?? undefined,
     KONDUCTOR_DECISION_ID: body.decision_id ?? undefined,
     KONDUCTOR_RUN_SOURCE: source,
@@ -750,7 +778,8 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     agent_status: "starting",
     worktree_path: worktreePath,
     branch,
-    feature_item_id: body.feature_item_id ?? null,
+    feature_item_ids: featureItemIds,
+    feature_item_id: primaryFeatureItemId,
     todo_id: body.todo_id ?? null,
     feature_item_title: promptPayload.feature_item_title,
     decision_id: body.decision_id ?? null,
@@ -781,11 +810,11 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     kind: "milestone",
     subject: "agent",
     action: "created",
-    message: `Queued ${label} agent "${slug}"${promptPayload.feature_item_title ? ` for feature "${promptPayload.feature_item_title}"` : ""}.`,
+    message: `Queued ${label} agent "${slug}"${promptPayload.feature_item_title ? ` for ${featureItemIds.length > 1 ? `${featureItemIds.length} selected features` : `feature "${promptPayload.feature_item_title}"`}` : ""}.`,
     agent: "konductor-host",
     run_id: runId,
     profile_id: profile.id,
-    feature_item_id: body.feature_item_id ?? null,
+    feature_item_id: primaryFeatureItemId,
     source,
     task_state: "started",
   });
@@ -822,7 +851,7 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
       agent: "konductor-host",
       run_id: runId,
       profile_id: profile.id,
-      feature_item_id: body.feature_item_id ?? null,
+      feature_item_id: primaryFeatureItemId,
       source,
       task_state: "failed",
     });
@@ -882,7 +911,7 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     agent: "konductor-host",
     run_id: runId,
     profile_id: profile.id,
-    feature_item_id: body.feature_item_id ?? null,
+    feature_item_id: primaryFeatureItemId,
     source,
   });
   await incrementRunCounters(repoPath, runId, { updates: 1 });

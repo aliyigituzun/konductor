@@ -49,6 +49,7 @@ import { RECEIVER_SCRIPT } from "@konductor/telemetry";
 export interface McpRunContext {
   run_id: string | null;
   profile_id: string | null;
+  feature_item_ids: string[];
   feature_item_id: string | null;
   source: "dashboard" | "cli";
 }
@@ -61,10 +62,14 @@ function optionalRunValue(value: string | undefined): string | null {
 
 export function resolveMcpRunContext(env: NodeJS.ProcessEnv): McpRunContext {
   const source = optionalRunValue(env["KONDUCTOR_RUN_SOURCE"]);
+  const featureItemId = optionalRunValue(env["KONDUCTOR_FEATURE_ITEM_ID"]);
+  const featureItemIds = (optionalRunValue(env["KONDUCTOR_FEATURE_ITEM_IDS"]) ?? "")
+    .split(",").map((id) => id.trim()).filter(Boolean);
   return {
     run_id: optionalRunValue(env["KONDUCTOR_RUN_ID"]),
     profile_id: optionalRunValue(env["KONDUCTOR_PROFILE_ID"]),
-    feature_item_id: optionalRunValue(env["KONDUCTOR_FEATURE_ITEM_ID"]),
+    feature_item_ids: [...new Set([...featureItemIds, ...(featureItemId ? [featureItemId] : [])])],
+    feature_item_id: featureItemId,
     source: source === "dashboard" ? "dashboard" : "cli",
   };
 }
@@ -77,6 +82,7 @@ export function bindMcpRunContext(
     return {
       run_id: null,
       profile_id: null,
+      feature_item_ids: [],
       feature_item_id: null,
       source: "cli",
     };
@@ -303,7 +309,7 @@ export async function runMcpServe(args: string[]): Promise<void> {
         {
           name: "get_run_context",
           description:
-            "Returns the current Konductor run metadata injected by the host or caller, including run_id, profile_id, selected feature_item_id, and source.",
+            "Returns the current Konductor run metadata injected by the host or caller, including every selected feature, run_id, profile_id, and source.",
           inputSchema: {
             type: "object",
             properties: {},
@@ -625,18 +631,10 @@ export async function runMcpServe(args: string[]): Promise<void> {
       const assetContext = access.allowed
         ? await readAgentAssetContext(cwd)
         : { enabled: false, reason: access.reason };
-      const feature =
-        trustedRunContext.feature_item_id && snap?.features
-          ? snap.features
-              .flatMap((category) =>
-                category.items.map((item) => ({
-                  category_id: category.id,
-                  category_title: category.title,
-                  ...item,
-                })),
-              )
-              .find((item) => item.id === trustedRunContext.feature_item_id) ?? null
-          : null;
+      const features = snap?.features
+        ?.flatMap((category) => category.items.map((item) => ({ category_id: category.id, category_title: category.title, ...item })))
+        .filter((item) => trustedRunContext.feature_item_ids.includes(item.id)) ?? [];
+      const feature = features[0] ?? null;
       const decisions = await listDecisions(cwd);
       return {
         content: [
@@ -649,6 +647,7 @@ export async function runMcpServe(args: string[]): Promise<void> {
                 important_paths: importantProjectPaths(cwd),
                 available_prompt_packs: config?.agents?.prompt_packs ?? [],
                 selected_feature: feature,
+                selected_features: features,
                 open_decisions: decisions.filter((decision) => decision.status === "open"),
                 feature_decisions: feature
                   ? decisions.filter((decision) => decision.feature_item_ids.includes(feature.id))
