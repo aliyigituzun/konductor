@@ -41,8 +41,11 @@ Implemented now:
 - `/root`: a super-admin route, separate from dashboard sessions, guarded by a
   32-character key generated once by `konductor setup`. It lists persisted project
   spaces and creates new ones, each with its own admin account.
-- First-run onboarding: a single "Proceed" screen shown once per browser before the
-  dashboard renders.
+- First-run onboarding: a multi-step wizard shown once per browser before the
+  dashboard renders. It sets host-wide feature flags (asset manager, docs/wiki
+  manager, customer endpoint) that Configuration › Features can change afterward;
+  disabling one hides its dashboard tab everywhere instead of leaving an unused tab
+  visible.
 
 Not implemented:
 
@@ -141,7 +144,17 @@ permission the policy table (`packages/api/src/auth/policy.ts`) assigns to that
 method and path; state-changing requests must also come from the dashboard's own
 origin. Roles expand to dashboard permissions (`AUTH_ROLE_PERMISSIONS`); today both
 `admin` and `member` expand to the full set, so the enforcement path is exercised
-while no capability is withheld yet. The host's terminal WebSocket honours the same
+while no capability is withheld yet.
+
+Administrators create users from the Project Space configuration. A `member`
+carries **permission sets**: each set names a selection from the fine-grained
+`UserPermissionSchema` catalog (`packages/schema/src/permissions.ts`; assets, remote
+instance agents, features/phases, to-dos, decisions, tokens, reviews) and the
+projects it applies to. Within one user a project belongs to at most one set;
+`validatePermissionSets` enforces that in the store, the API, and the form.
+Administrators carry no sets and have full access. Sets are stored and editable but
+not yet enforced: route guards still use the coarse `AuthPermissionSchema` above,
+and binding the catalog to those guards is the next step. The host's terminal WebSocket honours the same
 session, in development through the Vite proxy and in production directly.
 
 This is not a claim that Konductor is ready to bind a host to a public interface. The
@@ -264,9 +277,9 @@ profiles that may receive asset instructions; disabling it stops injection and k
 the existing library intact.
 
 - A folder (`AssetBucket`) carries placement instructions, accepted types, upload
-  protection, and opt-in descriptive metadata. Folders nest through `parent_id`;
-  `null` marks a root folder. Built-in presets are no relation, page based, type
-  based, and custom.
+  protection, an eight-color visual accent, and opt-in descriptive metadata. Folders
+  nest through `parent_id`; `null` marks a root folder. Built-in presets are no
+  relation, page based, type based, and custom.
 - The reserved `uncategorized` bucket holds loose assets at the library root. It is
   never shown as a folder, cannot be moved or deleted, and is the fallback when a
   folder is deleted: deleting a folder removes its whole subtree and moves every

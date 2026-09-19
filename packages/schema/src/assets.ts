@@ -7,6 +7,18 @@ export const AssetBucketPresetSchema = z.enum([
   "custom",
 ]);
 
+/** The visual accent used to distinguish a folder in the asset explorer. */
+export const AssetBucketColorSchema = z.enum([
+  "gray",
+  "red",
+  "orange",
+  "yellow",
+  "green",
+  "blue",
+  "purple",
+  "pink",
+]);
+
 export const AssetReviewPolicySchema = z.enum([
   "wait_for_review",
   "continue_after_handoff",
@@ -38,6 +50,7 @@ export const AssetBucketSchema = z.object({
   id: z.string(),
   parent_id: z.string().nullable().default(null),
   title: z.string(),
+  color: AssetBucketColorSchema.default("gray"),
   preset: AssetBucketPresetSchema,
   instruction: z.string(),
   path: z.string().nullable(),
@@ -181,6 +194,7 @@ export const ChangeRequestSubmitSchema = z.object({
 });
 
 export type AssetBucketPreset = z.infer<typeof AssetBucketPresetSchema>;
+export type AssetBucketColor = z.infer<typeof AssetBucketColorSchema>;
 export type AssetReviewPolicy = z.infer<typeof AssetReviewPolicySchema>;
 export type AssetMetadata = z.infer<typeof AssetMetadataSchema>;
 export type AssetManagerConfig = z.infer<typeof AssetManagerConfigSchema>;

@@ -1,20 +1,28 @@
-import React, { useContext } from "react";
+import React, { useContext, useEffect, useState } from "react";
 import { Link, useLocation, useMatch, useNavigate, useSearchParams } from "react-router-dom";
 import { AppContext } from "../AppContext.js";
 import { useAuth } from "../AuthContext.js";
+import { FEATURE_FLAGS_CHANGED_EVENT, fetchHostFeatureFlags } from "../lib/registry.js";
+import type { FeatureFlags } from "../lib/types.js";
 import "./Header.css";
 
-const TABS = [
+interface TabDef {
+  id: "status" | "features" | "todos" | "agents" | "assets" | "reviews" | "docs";
+  label: string;
+  requires?: keyof FeatureFlags;
+}
+
+const TABS: TabDef[] = [
   { id: "status", label: "Status" },
   { id: "features", label: "Features" },
   { id: "todos", label: "To-dos" },
   { id: "agents", label: "Agents" },
-  { id: "assets", label: "Assets" },
-  { id: "reviews", label: "Reviews" },
-  { id: "docs", label: "Project Details" },
-] as const;
+  { id: "assets", label: "Assets", requires: "asset_manager_enabled" },
+  { id: "reviews", label: "Reviews", requires: "customer_endpoint_enabled" },
+  { id: "docs", label: "Project Details", requires: "docs_manager_enabled" },
+];
 
-type TabId = typeof TABS[number]["id"];
+type TabId = TabDef["id"];
 
 export function Header() {
   const { projectName, projectProfileName } = useContext(AppContext);
@@ -24,10 +32,24 @@ export function Header() {
   const match = useMatch("/project/:id");
   const deepMatch = useMatch("/project/:id/*");
   const [searchParams, setSearchParams] = useSearchParams();
+  const [features, setFeatures] = useState<FeatureFlags | null>(null);
   const projectId = match?.params.id ?? deepMatch?.params.id ?? null;
   const isFeatureCategoryPage = location.pathname.includes("/features/");
   const activeTab = (isFeatureCategoryPage ? "features" : (searchParams.get("tab") ?? "status")) as TabId;
   const isProjectPage = !!projectId;
+  const tabs = TABS.filter((tab) => !tab.requires || (features?.[tab.requires] ?? true));
+
+  useEffect(() => {
+    let cancelled = false;
+    function load() {
+      fetchHostFeatureFlags().then((next) => { if (!cancelled) setFeatures(next); }).catch(() => {
+        // Host unreachable: fall back to showing every tab rather than hiding real features.
+      });
+    }
+    load();
+    window.addEventListener(FEATURE_FLAGS_CHANGED_EVENT, load);
+    return () => { cancelled = true; window.removeEventListener(FEATURE_FLAGS_CHANGED_EVENT, load); };
+  }, []);
 
   if (location.pathname.startsWith("/review/")) return null;
 
@@ -69,7 +91,7 @@ export function Header() {
 
       {isProjectPage ? (
         <nav className="hdr__tabs">
-          {TABS.map((tab) => (
+          {tabs.map((tab) => (
             <button
               key={tab.id}
               type="button"

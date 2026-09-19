@@ -4,20 +4,25 @@ import type { Database } from "bun:sqlite";
 import {
   AuthUserSchema,
   ConfigurationStateSchema,
+  FeatureFlagsSchema,
   GitHubConnectionSchema,
   PortSettingsSchema,
   RemoteAccessSettingsSchema,
   ScopeConfigurationSchema,
   ThemePreferenceSchema,
+  UserPermissionSetSchema,
+  validatePermissionSets,
   type AuthUser,
   type AuthUserRole,
   type ConfigurationScopeType,
   type ConfigurationState,
+  type FeatureFlags,
   type GitHubConnection,
   type PortSettings,
   type RemoteAccessSettings,
   type ScopeConfiguration,
   type ThemePreference,
+  type UserPermissionSet,
 } from "@konductor/schema";
 import { withDatabase } from "./database.js";
 import { GLOBAL_DATABASE } from "./paths.js";
@@ -45,6 +50,7 @@ function defaultConfiguration(
     auth: { enabled: false },
     integrations: { github: null },
     ports: { reserved: [], preview_range: { start: 4200, end: 4299 } },
+    features: { asset_manager_enabled: true, docs_manager_enabled: true, customer_endpoint_enabled: true },
     updated_at: new Date().toISOString(),
   });
 }
@@ -139,6 +145,23 @@ export async function updatePortSettings(
   return readConfigurationState(scopeType, scopeId);
 }
 
+export async function updateFeatureFlags(
+  scopeType: ConfigurationScopeType,
+  scopeId: string,
+  features: FeatureFlags,
+): Promise<ConfigurationState> {
+  const parsedFeatures = FeatureFlagsSchema.parse(features);
+  withDatabase(GLOBAL_DATABASE, (db) => db.transaction(() => {
+    const current = readSettingsRow(db, scopeType, scopeId);
+    writeSettingsRow(db, ScopeConfigurationSchema.parse({
+      ...current,
+      features: parsedFeatures,
+      updated_at: new Date().toISOString(),
+    }));
+  }).immediate());
+  return readConfigurationState(scopeType, scopeId);
+}
+
 export async function updateRemoteConfiguration(
   scopeType: ConfigurationScopeType,
   scopeId: string,
@@ -218,10 +241,12 @@ export async function createAuthUser(input: {
   email: string;
   password: string;
   role?: AuthUserRole;
+  permission_sets?: UserPermissionSet[];
 }): Promise<ConfigurationState> {
   const now = new Date().toISOString();
   const state = await readConfigurationState(input.scope_type, input.scope_id);
   const firstUser = state.users.length === 0;
+  const role: AuthUserRole = firstUser ? "admin" : (input.role ?? "member");
   const user = AuthUserSchema.parse({
     schema_version: "0.1.0",
     id: randomUUID(),
@@ -229,8 +254,9 @@ export async function createAuthUser(input: {
     scope_id: input.scope_id,
     display_name: input.display_name.trim(),
     email: input.email.trim().toLowerCase(),
-    role: firstUser ? "admin" : (input.role ?? "member"),
-    permissions: [],
+    role,
+    // Administrators have full access, so any sets sent with that role are dropped.
+    permission_sets: role === "admin" ? [] : parsePermissionSets(input.permission_sets ?? []),
     pinned_todo_phase_ids: [],
     status: "active",
     created_at: now,
@@ -257,6 +283,38 @@ export async function createAuthUser(input: {
     }
     throw error;
   }
+  return readConfigurationState(input.scope_type, input.scope_id);
+}
+
+/** Applies both the per-set schema and the cross-set rules before anything is stored. */
+function parsePermissionSets(sets: UserPermissionSet[]): UserPermissionSet[] {
+  const parsed = sets.map((set) => UserPermissionSetSchema.parse(set));
+  const errors = validatePermissionSets(parsed);
+  if (errors.length > 0) throw new Error(errors.join(" "));
+  return parsed;
+}
+
+export async function updateAuthUserPermissionSets(input: {
+  scope_type: ConfigurationScopeType;
+  scope_id: string;
+  user_id: string;
+  permission_sets: UserPermissionSet[];
+}): Promise<ConfigurationState> {
+  const permissionSets = parsePermissionSets(input.permission_sets);
+  withDatabase(GLOBAL_DATABASE, (db) => db.transaction(() => {
+    const row = db.query<{ body: string }, [string, string, string]>(`
+      SELECT body FROM auth_users WHERE id = ? AND scope_type = ? AND scope_id = ?
+    `).get(input.user_id, input.scope_type, input.scope_id);
+    if (!row) throw new Error("User not found in this configuration scope.");
+    const user = AuthUserSchema.parse(JSON.parse(row.body));
+    if (user.role === "admin") throw new Error("Administrators have full access; permission sets apply to members only.");
+    const next = AuthUserSchema.parse({
+      ...user,
+      permission_sets: permissionSets,
+      updated_at: new Date().toISOString(),
+    });
+    db.query("UPDATE auth_users SET body = ? WHERE id = ?").run(JSON.stringify(next), input.user_id);
+  }).immediate());
   return readConfigurationState(input.scope_type, input.scope_id);
 }
 

@@ -1,4 +1,4 @@
-import { AssetManagerConfigSchema, AssetMetadataSchema } from "@konductor/schema";
+import { AssetBucketColorSchema, AssetManagerConfigSchema, AssetMetadataSchema } from "@konductor/schema";
 import { readFile } from "node:fs/promises";
 import { resolve, sep } from "node:path";
 import {
@@ -114,14 +114,20 @@ export function registerAssetRoutes(router: Router): void {
   router.put("/api/project/:id/assets/buckets/:bucketId/settings", async ({ params, request }) => {
     const entry = await requireProject(params["id"]!);
     const body = await readJsonBody<unknown>(request);
-    if (typeof body !== "object" || body === null || !("prevent_agent_uploads" in body)) {
+    if (typeof body !== "object" || body === null) return badRequest(new Error("Folder settings must be an object."));
+    const candidate = body as { prevent_agent_uploads?: unknown; color?: unknown };
+    const includesUploadLock = "prevent_agent_uploads" in candidate;
+    const includesColor = "color" in candidate;
+    if (!includesUploadLock && !includesColor) return badRequest(new Error("Provide prevent_agent_uploads or color."));
+    if (includesUploadLock && typeof candidate.prevent_agent_uploads !== "boolean") {
       return badRequest(new Error("prevent_agent_uploads must be a boolean."));
     }
-    const settings = body as { prevent_agent_uploads: unknown };
-    if (typeof settings.prevent_agent_uploads !== "boolean") return badRequest(new Error("prevent_agent_uploads must be a boolean."));
+    const color = includesColor ? AssetBucketColorSchema.safeParse(candidate.color) : null;
+    if (color && !color.success) return badRequest(color.error);
     try {
       return json(await updateAssetBucketSettings(entry.repo_path, params["bucketId"]!, {
-        prevent_agent_uploads: settings.prevent_agent_uploads,
+        ...(includesUploadLock ? { prevent_agent_uploads: candidate.prevent_agent_uploads as boolean } : {}),
+        ...(color?.success ? { color: color.data } : {}),
       }));
     } catch (error) {
       return badRequest(error);

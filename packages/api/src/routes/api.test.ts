@@ -388,6 +388,9 @@ test("asset routes manage settings, categories, items, variations, and serve man
     expect((await call("PUT", "/api/project/demo/assets/buckets/" + bucketId + "/settings", { prevent_agent_uploads: "no" })).status).toBe(400);
     const locked = await call("PUT", "/api/project/demo/assets/buckets/" + bucketId + "/settings", { prevent_agent_uploads: true });
     expect(locked.json.prevent_agent_uploads).toBe(true);
+    expect((await call("PUT", "/api/project/demo/assets/buckets/" + bucketId + "/settings", { color: "teal" })).status).toBe(400);
+    const colored = await call("PUT", "/api/project/demo/assets/buckets/" + bucketId + "/settings", { color: "purple" });
+    expect(colored.json).toMatchObject({ color: "purple", prevent_agent_uploads: true });
     const meta = await call("PUT", "/api/project/demo/assets/buckets/" + bucketId + "/metadata", { description: "Sidebar icons", tags: ["ui"], expose_to_agents: true });
     expect(meta.json.metadata).toMatchObject({ description: "Sidebar icons", tags: ["ui"], expose_to_agents: true });
 
@@ -487,6 +490,49 @@ test("configuration routes validate scopes and drive theme, users, auth, and rem
       display_name: "Again", email: "owner@example.test", password: "correct horse battery staple",
     });
     expect(duplicate.json.error).toContain("already exists");
+
+    // Member permission sets: validated per set, across sets, and against the registry.
+    const overlap = await call("POST", "/api/config/project_space/demo-space/auth/users", {
+      display_name: "Member", email: "member@example.test", password: "correct horse battery staple", role: "member",
+      permission_sets: [
+        { name: "Build", permissions: ["features.add"], project_ids: ["demo"] },
+        { name: "Review", permissions: ["reviews.launch_instance"], project_ids: ["demo"] },
+      ],
+    });
+    expect(overlap.json.code).toBe("PERMISSION_SETS_INVALID");
+    expect(overlap.json.details).toEqual(expect.arrayContaining([expect.stringContaining("Build and Review")]));
+    const emptySet = await call("POST", "/api/config/project_space/demo-space/auth/users", {
+      display_name: "Member", email: "member@example.test", password: "correct horse battery staple", role: "member",
+      permission_sets: [{ name: "Build", permissions: [], project_ids: ["demo"] }],
+    });
+    expect(emptySet.json.code).toBe("PERMISSION_SETS_INVALID");
+    const unknownProject = await call("POST", "/api/config/project_space/demo-space/auth/users", {
+      display_name: "Member", email: "member@example.test", password: "correct horse battery staple", role: "member",
+      permission_sets: [{ name: "Build", permissions: ["features.add"], project_ids: ["nope"] }],
+    });
+    expect(unknownProject.json.code).toBe("PERMISSION_SET_PROJECT_INVALID");
+    expect(unknownProject.json.details).toEqual(["nope"]);
+    const member = await call("POST", "/api/config/project_space/demo-space/auth/users", {
+      display_name: "Member", email: "member@example.test", password: "correct horse battery staple", role: "member",
+      permission_sets: [{ name: "Build", permissions: ["features.add", "todos.add"], project_ids: ["demo"] }],
+    });
+    expect(member.status).toBe(201);
+    const memberUser = member.json.users.find((user: { email: string }) => user.email === "member@example.test");
+    expect(memberUser.permission_sets).toHaveLength(1);
+    expect(memberUser.permission_sets[0]).toMatchObject({ name: "Build", permissions: ["features.add", "todos.add"], project_ids: ["demo"] });
+    expect(typeof memberUser.permission_sets[0].id).toBe("string");
+    const replaced = await call("PUT", "/api/config/project_space/demo-space/auth/users/" + memberUser.id + "/permission-sets", {
+      permission_sets: [{ id: memberUser.permission_sets[0].id, name: "Review", permissions: ["reviews.reserve_port"], project_ids: ["demo"] }],
+    });
+    expect(replaced.status).toBe(200);
+    expect(replaced.json.users.find((user: { id: string }) => user.id === memberUser.id).permission_sets[0].name).toBe("Review");
+    expect((await call("PUT", "/api/config/project_space/demo-space/auth/users/missing/permission-sets", { permission_sets: [] })).status).toBe(404);
+    // Administrators never carry sets, even when the form sends them.
+    const admin = await call("POST", "/api/config/project_space/demo-space/auth/users", {
+      display_name: "Second admin", email: "admin2@example.test", password: "correct horse battery staple", role: "admin",
+      permission_sets: [{ name: "Build", permissions: ["features.add"], project_ids: ["demo"] }],
+    });
+    expect(admin.json.users.find((user: { email: string }) => user.email === "admin2@example.test").permission_sets).toEqual([]);
 
     const badRemote = await call("PUT", "/api/config/project_space/demo-space/remote", { enabled: true, remote_port: 70000, local_host: "0.0.0.0" });
     expect(badRemote.json.code).toBe("REMOTE_SETTINGS_INVALID");

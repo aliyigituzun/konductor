@@ -46,6 +46,7 @@ function uncategorizedBucket(): AssetBucket {
     id: UNCATEGORIZED_BUCKET_ID,
     parent_id: null,
     title: "Uncategorized",
+    color: "gray",
     preset: "no_relation",
     instruction: "Loose assets at the library root are kept here.",
     path: null,
@@ -154,6 +155,7 @@ export async function createAssetBucket(
   input: {
     title: string;
     parent_id?: string | null;
+    color?: AssetBucket["color"];
     preset?: AssetBucket["preset"];
     instruction?: string;
     path?: string | null;
@@ -171,6 +173,7 @@ export async function createAssetBucket(
       id: uniqueId(library.buckets.map((item) => item.id), title, "folder"),
       parent_id: parentId,
       title,
+      color: input.color ?? "gray",
       preset: input.preset ?? "no_relation",
       instruction: input.instruction?.trim() ?? "",
       path: input.path?.trim() || null,
@@ -396,15 +399,16 @@ export async function updateManagedAssetMetadata(
 export async function updateAssetBucketSettings(
   cwd: string,
   bucketId: string,
-  input: { prevent_agent_uploads: boolean },
+  input: { prevent_agent_uploads?: boolean; color?: AssetBucket["color"] },
 ): Promise<AssetBucket> {
   return mutateLibrary(cwd, (library) => {
     const bucket = library.buckets.find((item) => item.id === bucketId);
     if (!bucket) throw new Error(`Asset folder "${bucketId}" was not found.`);
-    if (bucket.id === UNCATEGORIZED_BUCKET_ID && input.prevent_agent_uploads) {
+    const preventAgentUploads = input.prevent_agent_uploads ?? bucket.prevent_agent_uploads;
+    if (bucket.id === UNCATEGORIZED_BUCKET_ID && preventAgentUploads) {
       throw new Error("The root archive cannot block agent uploads because it is the fallback destination.");
     }
-    const updated = { ...bucket, prevent_agent_uploads: input.prevent_agent_uploads };
+    const updated = { ...bucket, prevent_agent_uploads: preventAgentUploads, color: input.color ?? bucket.color };
     library.buckets = library.buckets.map((item) => item.id === bucketId ? updated : item);
     return updated;
   });

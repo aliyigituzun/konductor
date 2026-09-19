@@ -16,6 +16,7 @@ import {
   readAssetLibrary,
   setAssetVariationUsed,
   updateAssetBucketMetadata,
+  updateAssetBucketSettings,
   updateManagedAssetMetadata,
 } from "./assets.js";
 
@@ -138,10 +139,13 @@ describe("asset library", () => {
   });
 
   test("nests folders, moves items between them, and deletes subtrees into the root archive", async () => {
-    const models = await createAssetBucket(cwd, { title: "3D" });
+    const models = await createAssetBucket(cwd, { title: "3D", color: "blue" });
     const characters = await createAssetBucket(cwd, { title: "Characters", parent_id: models.id });
     const heroes = await createAssetBucket(cwd, { title: "Heroes", parent_id: characters.id });
     expect(models.parent_id).toBe(null);
+    expect(models.color).toBe("blue");
+    expect(characters.color).toBe("gray");
+    expect((await updateAssetBucketSettings(cwd, models.id, { color: "purple" })).color).toBe("purple");
     expect(characters.parent_id).toBe(models.id);
     await expect(createAssetBucket(cwd, { title: "Orphan", parent_id: "missing" })).rejects.toThrow("was not found");
     await expect(createAssetBucket(cwd, { title: "Loose", parent_id: "uncategorized" })).rejects.toThrow("null parent");
@@ -172,5 +176,6 @@ describe("asset library", () => {
     const bucket = { id: "legacy", title: "Legacy", preset: "no_relation", instruction: "", path: null, accepted_types: [], prevent_agent_uploads: false, created_at: new Date().toISOString() };
     await writeFile(paths.assetsIndex, JSON.stringify({ schema_version: "0.1.0", buckets: [bucket], assets: [], updated_at: new Date().toISOString() }));
     expect((await readAssetLibrary(cwd)).buckets.find((item) => item.id === "legacy")?.parent_id).toBe(null);
+    expect((await readAssetLibrary(cwd)).buckets.find((item) => item.id === "legacy")?.color).toBe("gray");
   });
 });

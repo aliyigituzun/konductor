@@ -188,6 +188,7 @@ test("the policy maps every route to a permission and keeps sign-in public", asy
     expect(requiredPermission("PUT", "/api/project/demo/assets/settings")).toBe("assets:write");
     expect(requiredPermission("POST", "/api/project/demo/reviews")).toBe("reviews:manage");
     expect(requiredPermission("POST", "/api/config/project_space/team/auth/users")).toBe("users:manage");
+    expect(requiredPermission("PUT", "/api/config/project_space/team/auth/users/u1/permission-sets")).toBe("users:manage");
     expect(requiredPermission("POST", "/api/config/host/local/tokens")).toBe("tokens:manage");
     expect(requiredPermission("DELETE", "/api/access-tokens/x")).toBe("tokens:manage");
     expect(requiredPermission("PUT", "/api/config/host/local/general")).toBe("config:write");

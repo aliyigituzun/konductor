@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { UserPermissionSetSchema } from "./permissions.js";
 
 /** `host` has exactly one scope id, `local`: settings for this machine rather than a project. */
 export const ConfigurationScopeTypeSchema = z.enum(["project_space", "project", "host"]);
@@ -42,6 +43,17 @@ export const IntegrationSettingsSchema = z.object({
   github: GitHubConnectionSchema.nullable().default(null),
 });
 
+/**
+ * Which optional surfaces show up as dashboard tabs. Defaults to enabled so
+ * existing configuration rows (parsed before this field existed) keep every
+ * tab visible; onboarding is the only flow that turns one off.
+ */
+export const FeatureFlagsSchema = z.object({
+  asset_manager_enabled: z.boolean().default(true),
+  docs_manager_enabled: z.boolean().default(true),
+  customer_endpoint_enabled: z.boolean().default(true),
+});
+
 export const ScopeConfigurationSchema = z.object({
   schema_version: z.literal("0.1.0"),
   scope_type: ConfigurationScopeTypeSchema,
@@ -53,12 +65,20 @@ export const ScopeConfigurationSchema = z.object({
   auth: AuthenticationSettingsSchema,
   integrations: IntegrationSettingsSchema.default({ github: null }),
   ports: PortSettingsSchema.default({ reserved: [], preview_range: { start: 4200, end: 4299 } }),
+  features: FeatureFlagsSchema.default({
+    asset_manager_enabled: true,
+    docs_manager_enabled: true,
+    customer_endpoint_enabled: true,
+  }),
   updated_at: z.string().datetime(),
 });
 
 export const AuthUserRoleSchema = z.enum(["admin", "member"]);
 
-/** Permissions intentionally remain empty until the detailed policy model lands. */
+/**
+ * Members carry per-project permission sets; administrators have full access and
+ * keep the list empty. Sets are stored but not enforced yet (see permissions.ts).
+ */
 export const AuthUserSchema = z.object({
   schema_version: z.literal("0.1.0"),
   id: z.string().uuid(),
@@ -67,7 +87,7 @@ export const AuthUserSchema = z.object({
   display_name: z.string().min(1),
   email: z.string().email(),
   role: AuthUserRoleSchema,
-  permissions: z.array(z.string()).max(0).default([]),
+  permission_sets: z.array(UserPermissionSetSchema).default([]),
   /** Personal phase shortcuts used by the to-do workspace. */
   pinned_todo_phase_ids: z.array(z.string()).default([]),
   status: z.enum(["active", "disabled"]).default("active"),
@@ -86,6 +106,7 @@ export type RemoteAccessSettings = z.infer<typeof RemoteAccessSettingsSchema>;
 export type AuthenticationSettings = z.infer<typeof AuthenticationSettingsSchema>;
 export type GitHubConnection = z.infer<typeof GitHubConnectionSchema>;
 export type IntegrationSettings = z.infer<typeof IntegrationSettingsSchema>;
+export type FeatureFlags = z.infer<typeof FeatureFlagsSchema>;
 export type PortRange = z.infer<typeof PortRangeSchema>;
 export type PortSettings = z.infer<typeof PortSettingsSchema>;
 export type ScopeConfiguration = z.infer<typeof ScopeConfigurationSchema>;

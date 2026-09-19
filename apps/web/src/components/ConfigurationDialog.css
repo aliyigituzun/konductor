@@ -60,7 +60,7 @@
 .cfg__project-choice small { color: var(--text-tertiary); font-size: 11px; }
 .cfg__token-list, .cfg__user-list { display: grid; }
 .cfg__token-row { min-height: 70px; padding: 10px 14px; display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 16px; border-bottom: 1px solid var(--border-subtle); }
-.cfg__token-row:last-child, .cfg__user-row:last-child { border-bottom: 0; }
+.cfg__token-row:last-child, .cfg__user-list > div:last-child > :last-child { border-bottom: 0; }
 .cfg__token-main { min-width: 0; display: grid; gap: 3px; }
 .cfg__token-main > code { color: var(--text-tertiary); font-size: 11px; }
 .cfg__token-meta { display: grid; justify-items: end; gap: 3px; color: var(--text-tertiary); font-size: 12px; white-space: nowrap; }
@@ -69,12 +69,33 @@
 .cfg__state--expired { color: var(--warning); }
 .cfg__state--revoked { color: var(--danger); }
 .cfg__managed { min-width: 58px; text-align: right; color: var(--text-tertiary); font-size: 12px; }
-.cfg__user-row { min-height: 58px; padding: 9px 14px; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-subtle); }
+.cfg__user-row { min-height: 58px; padding: 9px 14px; display: grid; grid-template-columns: 32px minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-subtle); }
 .cfg__avatar { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--accent-bg); color: var(--accent); font-weight: 700; }
 .cfg__user-row > span:nth-child(2) { display: grid; min-width: 0; }
 .cfg__user-row small { color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; }
 .cfg__permissions { color: var(--text-tertiary); font-size: 12px; }
 .cfg__empty { padding: 16px; }
+.cfg__project-choice--taken { opacity: 0.55; cursor: not-allowed; }
+.cfg__project-choice--taken:hover { background: transparent; }
+
+/* Permission sets: one panel per set, projects first, then grouped capabilities. */
+.perm { display: grid; gap: 12px; }
+.perm__section { display: grid; gap: 10px; }
+.perm__section h4 { font-size: 14px; font-weight: 600; }
+.perm__set { padding: 14px; display: grid; gap: 14px; border: 1px solid var(--border-subtle); border-radius: var(--radius); background: var(--bg-panel); }
+.perm__set-head { display: flex; align-items: end; gap: 10px; }
+.perm__name { flex: 1; min-width: 0; }
+.perm__groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.perm__group { border: 1px solid var(--border-subtle); border-radius: var(--radius); padding: 0 0 6px; display: grid; align-content: start; background: var(--bg-canvas); }
+.perm__group legend { float: left; width: 100%; min-height: 36px; padding: 0 6px 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid var(--border-subtle); }
+.perm__group legend > span { display: grid; font-size: 13px; font-weight: 600; }
+.perm__group legend small { color: var(--text-tertiary); font-size: 11px; font-weight: 400; }
+.perm__item { min-height: 30px; padding: 3px 10px; display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.perm__item:hover { background: var(--bg-hover); }
+.perm__item > span { display: grid; font-size: 13px; }
+.perm__item small { color: var(--text-tertiary); font-size: 11px; }
+.perm__errors { padding-left: 18px; display: grid; gap: 2px; }
+.perm__inline { padding: 12px 14px 14px; display: grid; gap: 12px; border-bottom: 1px solid var(--border-subtle); }
 
 @media (max-width: 839px) {
   .cfg { height: 100vh; }
@@ -86,6 +107,7 @@
   .cfg__theme-grid, .cfg__projects { grid-template-columns: 1fr; }
   .cfg__token-row { grid-template-columns: minmax(0, 1fr) auto; }
   .cfg__token-meta { display: none; }
-  .cfg__user-row { grid-template-columns: 32px minmax(0, 1fr) auto; }
+  .cfg__user-row { grid-template-columns: 32px minmax(0, 1fr) auto auto; }
   .cfg__permissions { display: none; }
+  .perm__groups { grid-template-columns: 1fr; }
 }

@@ -68,9 +68,10 @@ a drive-style explorer: the section header is a breadcrumb (`Assets › 3D ›
 Characters`) whose segments navigate up, the body lists child folders before the
 assets of the current folder, and the page grows downward rather than scrolling
 inside the section. Loose assets appear inline at the root; the word
-"Uncategorized" is never shown. Folder tools (instruction, agent-upload lock,
+"Uncategorized" is never shown. Folder tools (instruction, agent-upload lock, color,
 metadata, move, delete) sit in a single row under the header only while inside a
-folder. Assets and folders move through a destination picker, not drag and drop. Asset
+folder. The color selector offers eight common accents and the chosen accent marks the
+folder icon. Assets and folders move through a destination picker, not drag and drop. Asset
 approval queues and public asset sharing remain placeholders, not implied
 functionality.
 

@@ -7,18 +7,20 @@ import { AgentsPanel } from "../components/AgentsPanel.js";
 import { AgentStatusIndicator } from "../components/agents/AgentStatusIndicator.js";
 import { PromptPackField } from "../components/agents/PromptPackField.js";
 import { FeatureDecisions, decisionsForFeature } from "../components/decisions/FeatureDecisions.js";
+import { EditFeatureDialog } from "../components/EditFeatureDialog.js";
 import {
   createProjectFeature,
   fetchHostHealth,
   fetchProject,
   formatApiError,
   startProjectRun,
+  updateProjectFeature,
   updateProjectFeaturePhases,
   type HostHealth,
   type ProjectData,
 } from "../lib/registry.js";
 import { itemStatusColor, itemStatusGlyph } from "../styles/ui.js";
-import type { KonductorConfig } from "../lib/types.js";
+import type { FeatureItem, KonductorConfig } from "../lib/types.js";
 import "../components/Features.css";
 
 type ViewMode = "list" | "tree";
@@ -54,6 +56,7 @@ export function FeatureCategoryPage() {
   const [createError, setCreateError] = useState<string | null>(null);
   const [createMessage, setCreateMessage] = useState<string | null>(null);
   const [hostHealth, setHostHealth] = useState<HostHealth | null>(null);
+  const [editingItem, setEditingItem] = useState<FeatureItem | null>(null);
 
   async function loadProject(projectId: string) {
     const project = await fetchProject(projectId);
@@ -232,15 +235,26 @@ export function FeatureCategoryPage() {
             <p className="k-empty" style={{ padding: 10 }}>No features</p>
           ) : viewMode === "list" ? (
             items.map((item) => (
-              <button
+              <div
                 key={item.id}
-                type="button"
+                role="button"
+                tabIndex={0}
                 className={`fc__feature${selectedItem?.id === item.id ? " fc__feature--active" : ""}`}
                 onClick={() => setSelectedItemId(item.id)}
+                onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); setSelectedItemId(item.id); } }}
               >
                 <span className="fc__feature-title">
                   <span className="k-glyph" style={{ color: itemStatusColor(item.status) }}>{itemStatusGlyph(item.status)}</span>
-                  <span className="k-truncate">{item.title}</span>
+                  <span className="k-truncate ft__item-title">{item.title}</span>
+                  <button
+                    type="button"
+                    className="ft__item-edit"
+                    aria-label={`Edit ${item.title}`}
+                    title="Edit feature"
+                    onClick={(event) => { event.stopPropagation(); setEditingItem(item); }}
+                  >
+                    ✎
+                  </button>
                 </span>
                 {item.description ? <span className="fc__feature-desc">{item.description}</span> : null}
                 {(() => {
@@ -249,7 +263,7 @@ export function FeatureCategoryPage() {
                   const open = linked.some((decision) => decision.status === "open");
                   return <span className={`dc__count${open ? " dc__count--open" : ""}`}>◆ {linked.length} decision{linked.length === 1 ? "" : "s"}</span>;
                 })()}
-              </button>
+              </div>
             ))
           ) : (
             <div className="fc__tree">
@@ -361,6 +375,20 @@ export function FeatureCategoryPage() {
       </div>
 
       {showInfo && <ProjectInfoModal paths={data.important_paths} onClose={() => setShowInfo(false)} />}
+
+      {editingItem && id ? (
+        <EditFeatureDialog
+          item={editingItem}
+          categoryId={category.id}
+          categories={data.status?.features ?? []}
+          onClose={() => setEditingItem(null)}
+          onSave={async (payload) => {
+            await updateProjectFeature(id, editingItem.id, payload);
+            await refreshProject();
+            setEditingItem(null);
+          }}
+        />
+      ) : null}
     </div>
   );
 }

@@ -8,6 +8,7 @@ export * from "./run.js";
 export * from "./assets.js";
 export * from "./project-profile.js";
 export * from "./access-token.js";
+export * from "./permissions.js";
 export * from "./configuration.js";
 export * from "./preview.js";
 export * from "./auth.js";

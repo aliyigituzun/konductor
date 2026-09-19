@@ -5,8 +5,9 @@ import { fetchHostHealth, formatApiError, type HostHealth } from "../lib/registr
 import { AgentStatusIndicator } from "./agents/AgentStatusIndicator.js";
 import { PromptPackField } from "./agents/PromptPackField.js";
 import { itemStatusColor, itemStatusGlyph } from "../styles/ui.js";
-import type { Decision, FeaturePhase, KonductorConfig, RunSummary, StatusSnapshot } from "../lib/types.js";
+import type { Decision, FeatureItem, FeaturePhase, KonductorConfig, RunSummary, StatusSnapshot } from "../lib/types.js";
 import { FeatureDecisions, decisionsForFeature } from "./decisions/FeatureDecisions.js";
+import { EditFeatureDialog } from "./EditFeatureDialog.js";
 import "./Features.css";
 
 interface LaunchPayload {
@@ -35,6 +36,10 @@ interface FeaturesPanelProps {
   onCreateCategory: (title: string) => Promise<{ category_id: string }>;
   onSavePhases: (phases: Array<{ id?: string; title: string }>) => Promise<void>;
   onReorderPhases: (phaseIds: string[]) => Promise<void>;
+  onUpdateFeature: (
+    featureId: string,
+    payload: { title: string; description?: string; status: "todo" | "in_progress" | "blocked" | "done"; category_id: string },
+  ) => Promise<void>;
 }
 
 function AgentContextDialog({
@@ -214,6 +219,7 @@ export function FeaturesPanel({
   onCreateCategory,
   onSavePhases,
   onReorderPhases,
+  onUpdateFeature,
   decisions,
   onDecisionsChanged,
 }: FeaturesPanelProps) {
@@ -221,6 +227,7 @@ export function FeaturesPanel({
   const [featureSelectionEnabled, setFeatureSelectionEnabled] = useState(false);
   const [selectedFeatureIds, setSelectedFeatureIds] = useState<string[]>([]);
   const [agentContextOpen, setAgentContextOpen] = useState(false);
+  const [editingItem, setEditingItem] = useState<{ item: FeatureItem; categoryId: string } | null>(null);
   const [selectedProfileId, setSelectedProfileId] = useState(config?.agents?.default_profile ?? "default-profile");
   const [selectedPacks, setSelectedPacks] = useState<string[]>(
     (config?.agents?.prompt_packs ?? []).slice(0, 1).map((pack) => pack.id),
@@ -568,6 +575,15 @@ export function FeaturesPanel({
                           return <span className={`dc__count${open ? " dc__count--open" : ""}`} title={`${linked.length} decision${linked.length === 1 ? "" : "s"}`}>◆ {linked.length}</span>;
                         })()}
                       </button>
+                      <button
+                        type="button"
+                        className="ft__item-edit"
+                        aria-label={`Edit ${item.title}`}
+                        title="Edit feature"
+                        onClick={() => setEditingItem({ item, categoryId: category.id })}
+                      >
+                        ✎
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -703,6 +719,19 @@ export function FeaturesPanel({
           error={dialogError}
           onClose={() => setDialog(null)}
           onSubmit={handleDialogSubmit}
+        />
+      ) : null}
+
+      {editingItem ? (
+        <EditFeatureDialog
+          item={editingItem.item}
+          categoryId={editingItem.categoryId}
+          categories={categories}
+          onClose={() => setEditingItem(null)}
+          onSave={async (payload) => {
+            await onUpdateFeature(editingItem.item.id, payload);
+            setEditingItem(null);
+          }}
         />
       ) : null}
     </div>

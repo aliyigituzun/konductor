@@ -9,9 +9,11 @@ import {
   fetchHostPortSettings,
   fetchRegistry,
   formatApiError,
+  saveHostFeatureFlags,
   saveHostPortSettings,
   revokeConfigurationToken,
   saveAuthenticationEnabled,
+  saveConfigurationUserPermissionSets,
   saveGeneralConfiguration,
   saveRemoteConfiguration,
   type ConfigurationScope,
@@ -20,25 +22,35 @@ import type {
   AccessTokenSummary,
   ConfigurationScopeType,
   ConfigurationState,
+  FeatureFlags,
   PortSettings,
   Registry,
   RemoteAccessSettings,
   ThemePreference,
   TokenRole,
+  UserPermissionSet,
 } from "../lib/types.js";
 import { useAuth } from "../AuthContext.js";
+import { PermissionSetsEditor, permissionSetErrors, summarizePermissionSets } from "./PermissionSetsEditor.js";
 import "./ConfigurationDialog.css";
 
-type ConfigurationTab = "general" | "integrations" | "remote" | "ports" | "tokens" | "auth";
+type ConfigurationTab = "general" | "integrations" | "remote" | "ports" | "features" | "tokens" | "auth";
 
-/** Remote access, ports, and authentication are Project Space concerns; a project only sees its own settings. */
+/** Remote access, ports, features, and authentication are Project Space concerns; a project only sees its own settings. */
 const TABS: Array<{ id: ConfigurationTab; label: string; note: string; scopes: ConfigurationScopeType[] }> = [
   { id: "general", label: "General", note: "Appearance", scopes: ["project", "project_space", "host"] },
   { id: "integrations", label: "Integrations", note: "Connected services", scopes: ["project", "project_space", "host"] },
   { id: "remote", label: "Remote", note: "Port forwarding", scopes: ["project_space", "host"] },
   { id: "ports", label: "Ports", note: "Host machine", scopes: ["project_space", "host"] },
+  { id: "features", label: "Features", note: "Dashboard tabs", scopes: ["host"] },
   { id: "tokens", label: "Access tokens", note: "Agent credentials", scopes: ["project", "project_space", "host"] },
   { id: "auth", label: "Authentication", note: "Users and access", scopes: ["project_space", "host"] },
+];
+
+const FEATURE_TOGGLES: Array<{ key: keyof FeatureFlags; title: string; help: string }> = [
+  { key: "asset_manager_enabled", title: "Asset manager", help: "Shows the Assets tab on every project." },
+  { key: "docs_manager_enabled", title: "Docs / wiki manager", help: "Shows the Project Details tab on every project." },
+  { key: "customer_endpoint_enabled", title: "Customer endpoint", help: "Shows the Reviews tab and enables customer review links." },
 ];
 
 const TOKEN_ROLE_HELP: Record<Exclude<TokenRole, "custom">, string> = {
@@ -105,6 +117,10 @@ export function ConfigurationDialog({ open, scope, initialTab = "general", onClo
   const [userEmail, setUserEmail] = useState("");
   const [userPassword, setUserPassword] = useState("");
   const [userRole, setUserRole] = useState<"admin" | "member">("member");
+  const [userSets, setUserSets] = useState<UserPermissionSet[]>([]);
+  // Which member's sets are being edited in the user list, and the draft for them.
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editingSets, setEditingSets] = useState<UserPermissionSet[]>([]);
   const [githubToken, setGithubToken] = useState("");
   // Port reservations belong to the machine, not the scope, so they load and save separately.
   const [ports, setPorts] = useState<PortSettings | null>(null);
@@ -116,6 +132,7 @@ export function ConfigurationDialog({ open, scope, initialTab = "general", onClo
     setMessage(null);
     setIssuedToken(null);
     setTokenProjects(scope.projectIds);
+    setEditingUserId(null);
     let cancelled = false;
     void Promise.all([
       fetchConfiguration(scope),
@@ -180,6 +197,22 @@ export function ConfigurationDialog({ open, scope, initialTab = "general", onClo
     } : current);
   }
 
+  async function saveFeatureFlag(key: keyof FeatureFlags, checked: boolean) {
+    if (!state) return;
+    setBusy(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const saved = await saveHostFeatureFlags({ ...state.settings.features, [key]: checked });
+      setState({ ...state, settings: { ...state.settings, features: saved } });
+      setMessage("Feature settings saved.");
+    } catch (nextError) {
+      setError(formatApiError(nextError));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function saveTheme(theme: ThemePreference) {
     applyTheme(theme);
     await mutate(() => saveGeneralConfiguration(scope, theme), "Appearance updated.");
@@ -227,16 +260,31 @@ export function ConfigurationDialog({ open, scope, initialTab = "general", onClo
   }
 
   async function createUser() {
-    if (!userName.trim() || !userEmail.trim() || userPassword.length < 12) return;
+    if (!userName.trim() || !userEmail.trim() || userPassword.length < 12 || userSetErrors.length > 0) return;
+    const role = state?.users.length ? userRole : "admin";
     await mutate(() => createConfigurationUser(scope, {
       display_name: userName.trim(),
       email: userEmail.trim(),
       password: userPassword,
-      role: state?.users.length ? userRole : "admin",
+      role,
+      permission_sets: role === "member" ? userSets : [],
     }), state?.users.length ? "User created." : "Administrator created.");
     setUserName("");
     setUserEmail("");
     setUserPassword("");
+    setUserSets([]);
+  }
+
+  function startEditingSets(userId: string, sets: UserPermissionSet[]) {
+    setEditingUserId(userId);
+    setEditingSets(sets);
+  }
+
+  async function saveEditedSets() {
+    if (!editingUserId || editingSetErrors.length > 0) return;
+    const userId = editingUserId;
+    await mutate(() => saveConfigurationUserPermissionSets(scope, userId, editingSets), "Permissions saved.");
+    setEditingUserId(null);
   }
 
   async function connectGithubAccount() {
@@ -253,6 +301,8 @@ export function ConfigurationDialog({ open, scope, initialTab = "general", onClo
   const theme = state?.settings.general.theme ?? "system";
   const hasAdmin = state?.users.some((user) => user.role === "admin" && user.status === "active") ?? false;
   const projects = registry?.projects ?? [];
+  const userSetErrors = userRole === "member" ? permissionSetErrors(userSets, projects) : [];
+  const editingSetErrors = permissionSetErrors(editingSets, projects);
 
   return (
     <div className="k-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
@@ -427,6 +477,26 @@ export function ConfigurationDialog({ open, scope, initialTab = "general", onClo
               </div>
             ) : null}
 
+            {state && tab === "features" ? (
+              <div className="cfg__stack">
+                <div>
+                  <h2 className="cfg__heading">Features</h2>
+                  <p className="cfg__intro">Turn off a feature to hide its tab everywhere in the dashboard instead of leaving it visible but unused.</p>
+                </div>
+                {FEATURE_TOGGLES.map((toggle) => (
+                  <label className="cfg__toggle-row" key={toggle.key}>
+                    <span><strong>{toggle.title}</strong><small>{toggle.help}</small></span>
+                    <input
+                      type="checkbox"
+                      checked={state.settings.features[toggle.key]}
+                      disabled={busy}
+                      onChange={(event) => void saveFeatureFlag(toggle.key, event.target.checked)}
+                    />
+                  </label>
+                ))}
+              </div>
+            ) : null}
+
             {state && tab === "tokens" ? (
               <div className="cfg__stack">
                 <div>
@@ -496,13 +566,41 @@ export function ConfigurationDialog({ open, scope, initialTab = "general", onClo
                     <label className="k-field"><span className="k-label">Password</span><input className="k-input" type="password" minLength={12} value={userPassword} placeholder="At least 12 characters" onChange={(event) => setUserPassword(event.target.value)} /></label>
                     {state.users.length > 0 ? <label className="k-field"><span className="k-label">Role</span><select className="k-select" value={userRole} onChange={(event) => setUserRole(event.target.value as "admin" | "member")}><option value="member">Member</option><option value="admin">Administrator</option></select></label> : null}
                   </div>
-                  <div className="k-actions"><button type="button" className="k-btn k-btn--primary" disabled={busy || !userName.trim() || !userEmail.trim() || userPassword.length < 12} onClick={() => void createUser()}>{state.users.length === 0 ? "Create administrator" : "Add user"}</button></div>
+                  {state.users.length > 0 ? (
+                    <div className="perm__section">
+                      <h4>Permissions</h4>
+                      {userRole === "admin"
+                        ? <p className="k-note">Administrators have full access to every project.</p>
+                        : <PermissionSetsEditor sets={userSets} projects={projects} disabled={busy} onChange={setUserSets} />}
+                    </div>
+                  ) : null}
+                  <div className="k-actions"><button type="button" className="k-btn k-btn--primary" disabled={busy || !userName.trim() || !userEmail.trim() || userPassword.length < 12 || userSetErrors.length > 0} onClick={() => void createUser()}>{state.users.length === 0 ? "Create administrator" : "Add user"}</button></div>
                 </section>
                 <section className="cfg__panel cfg__panel--flush">
                   <h3>Users</h3>
                   {state.users.length === 0 ? <p className="k-empty cfg__empty">No users yet. The first user becomes the administrator.</p> : (
                     <div className="cfg__user-list">
-                      {state.users.map((user) => <div key={user.id} className="cfg__user-row"><span className="cfg__avatar">{user.display_name.slice(0, 1).toUpperCase()}</span><span><strong>{user.display_name}</strong><small>{user.email}</small></span><span className="k-tag">{user.role}</span><span className="cfg__permissions">Permissions coming later</span></div>)}
+                      {state.users.map((user) => (
+                        <div key={user.id}>
+                          <div className="cfg__user-row">
+                            <span className="cfg__avatar">{user.display_name.slice(0, 1).toUpperCase()}</span>
+                            <span><strong>{user.display_name}</strong><small>{user.email}</small></span>
+                            <span className="k-tag">{user.role}</span>
+                            <span className="cfg__permissions">{user.role === "admin" ? "Full access" : summarizePermissionSets(user.permission_sets)}</span>
+                            {user.role === "member" ? (
+                              editingUserId === user.id
+                                ? <button type="button" className="k-btn k-btn--sm k-btn--ghost" disabled={busy} onClick={() => setEditingUserId(null)}>Cancel</button>
+                                : <button type="button" className="k-btn k-btn--sm" disabled={busy} onClick={() => startEditingSets(user.id, user.permission_sets)}>Edit</button>
+                            ) : <span />}
+                          </div>
+                          {editingUserId === user.id ? (
+                            <div className="perm__inline">
+                              <PermissionSetsEditor sets={editingSets} projects={projects} disabled={busy} onChange={setEditingSets} />
+                              <div className="k-actions"><button type="button" className="k-btn k-btn--primary k-btn--sm" disabled={busy || editingSetErrors.length > 0} onClick={() => void saveEditedSets()}>Save permissions</button></div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </section>

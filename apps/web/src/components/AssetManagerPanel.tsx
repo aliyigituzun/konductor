@@ -19,7 +19,7 @@ import {
   uploadManagedAsset,
   type AssetWorkspaceData,
 } from "../lib/registry.js";
-import type { AgentProfile, AssetBucket, AssetMetadata, AssetVariation, ManagedAsset } from "../lib/types.js";
+import type { AgentProfile, AssetBucket, AssetBucketColor, AssetMetadata, AssetVariation, ManagedAsset } from "../lib/types.js";
 import "./AssetManager.css";
 
 const UNCATEGORIZED_BUCKET_ID = "uncategorized";
@@ -46,6 +46,21 @@ const presets: Array<{ id: Preset; title: string; detail: string }> = [
   { id: "page_based", title: "Page based", detail: "Route, screen, scene, level" },
   { id: "type_based", title: "Type based", detail: "Media or source type" },
 ];
+
+const folderColors: Array<{ id: AssetBucketColor; label: string; value: string }> = [
+  { id: "gray", label: "Gray", value: "#6b7280" },
+  { id: "red", label: "Red", value: "#dc2626" },
+  { id: "orange", label: "Orange", value: "#ea580c" },
+  { id: "yellow", label: "Yellow", value: "#ca8a04" },
+  { id: "green", label: "Green", value: "#16a34a" },
+  { id: "blue", label: "Blue", value: "#2563eb" },
+  { id: "purple", label: "Purple", value: "#9333ea" },
+  { id: "pink", label: "Pink", value: "#db2777" },
+];
+
+function folderColorValue(color: AssetBucketColor): string {
+  return folderColors.find((item) => item.id === color)?.value ?? folderColors[0]!.value;
+}
 
 const emptyMetadata = (): AssetMetadata => ({
   description: "",
@@ -388,9 +403,9 @@ function FolderSelect({ value, options, includeRoot, invalid, onChange, autoFocu
   );
 }
 
-function FolderIcon() {
+function FolderIcon({ color = "gray" }: { color?: AssetBucketColor }) {
   return (
-    <svg className="am__folder-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+    <svg className="am__folder-icon" style={{ color: folderColorValue(color) }} viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
       <path fill="currentColor" d="M1.75 1A1.75 1.75 0 0 0 0 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0 0 16 13.25v-8.5A1.75 1.75 0 0 0 14.25 3H7.5a.25.25 0 0 1-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75Z" />
     </svg>
   );
@@ -543,7 +558,7 @@ export function AssetManagerPanel({ projectId, profiles }: { projectId: string; 
   const folderTile = (folder: AssetBucket) => (
     <div key={folder.id} className="am__folder">
       <button type="button" className="am__folder-open" onClick={() => setActiveFolderId(folder.id)} aria-label={`Open ${folder.title}`}>
-        <FolderIcon />
+        <FolderIcon color={folder.color} />
         <span className="k-truncate">{folder.title}</span>
         <span className="k-faint k-num">{folderItemCount(folder.id)}</span>
       </button>
@@ -586,6 +601,13 @@ export function AssetManagerPanel({ projectId, profiles }: { projectId: string; 
               <input type="checkbox" checked={activeFolder.prevent_agent_uploads} disabled={busy} onChange={(event) => void mutate(async () => { await updateAssetCategorySettings(projectId, activeFolder.id, { prevent_agent_uploads: event.target.checked }); })} />
               No agent uploads
             </label>
+            <label className="am__color-picker">
+              <span className="am__color-swatch" style={{ backgroundColor: folderColorValue(activeFolder.color) }} aria-hidden="true" />
+              <span className="k-faint">Color</span>
+              <select className="k-select" aria-label="Folder color" value={activeFolder.color} disabled={busy} onChange={(event) => void mutate(() => updateAssetCategorySettings(projectId, activeFolder.id, { color: event.target.value as AssetBucketColor }))}>
+                {folderColors.map((color) => <option key={color.id} value={color.id}>{color.label}</option>)}
+              </select>
+            </label>
             <button type="button" className="k-btn k-btn--ghost k-btn--sm" aria-pressed={editingFolder} onClick={() => setEditingFolder((v) => !v)}>Metadata</button>
             <button type="button" className="k-btn k-btn--ghost k-btn--sm" disabled={busy} onClick={() => openMove({ kind: "folder", folder: activeFolder })}>Move</button>
             <button type="button" className="k-btn k-btn--ghost k-btn--sm k-btn--danger" disabled={busy} onClick={() => deleteFolder(activeFolder)}>Delete</button>
@@ -626,7 +648,7 @@ export function AssetManagerPanel({ projectId, profiles }: { projectId: string; 
               {childFolders.map((folder) => (
                 <div key={folder.id} className="am__folder-row">
                   <button type="button" className="am__folder-open" onClick={() => setActiveFolderId(folder.id)}>
-                    <FolderIcon />
+                    <FolderIcon color={folder.color} />
                     <strong className="k-truncate">{folder.title}</strong>
                     <span className="k-faint">{folderItemCount(folder.id)} items</span>
                   </button>

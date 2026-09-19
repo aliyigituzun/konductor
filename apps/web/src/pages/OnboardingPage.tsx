@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { saveHostFeatureFlags } from "../lib/registry.js";
 import "./OnboardingPage.css";
 
 export const ONBOARDING_COMPLETE_KEY = "konductor-onboarding-complete";
@@ -64,7 +65,7 @@ export function OnboardingPage({ onProceed }: { onProceed: () => void }) {
     });
   }
 
-  function finish() {
+  async function finish() {
     const preferences: OnboardingPreferences = {
       instance_type: instanceType,
       remote_enabled: instanceType === "home" ? remoteEnabled : false,
@@ -79,11 +80,21 @@ export function OnboardingPage({ onProceed }: { onProceed: () => void }) {
     } catch {
       // Private window or blocked storage: preferences just aren't remembered.
     }
+    try {
+      // Persisted so the dashboard can hide tabs for features the operator chose not to enable.
+      await saveHostFeatureFlags({
+        asset_manager_enabled: assetManagerEnabled,
+        docs_manager_enabled: docsManagerEnabled,
+        customer_endpoint_enabled: customerEndpointEnabled,
+      });
+    } catch {
+      // The host may not be reachable yet; the choice still lives in localStorage above.
+    }
     onProceed();
   }
 
   function next() {
-    if (isLast) { finish(); return; }
+    if (isLast) { void finish(); return; }
     setStepIndex((i) => Math.min(i + 1, steps.length - 1));
   }
 
@@ -175,6 +186,7 @@ export function OnboardingPage({ onProceed }: { onProceed: () => void }) {
                   Enable customer review links
                 </label>
               </div>
+              <p className="onboarding__hint">Leave this off and the Reviews tab stays hidden. You can turn it on later in Configuration.</p>
             </fieldset>
           )}
 
@@ -187,6 +199,7 @@ export function OnboardingPage({ onProceed }: { onProceed: () => void }) {
                   Enable the asset manager
                 </label>
               </div>
+              <p className="onboarding__hint">Leave this off and the Assets tab stays hidden. You can turn it on later in Configuration.</p>
             </fieldset>
           )}
 
@@ -199,6 +212,7 @@ export function OnboardingPage({ onProceed }: { onProceed: () => void }) {
                   Enable the docs / wiki manager
                 </label>
               </div>
+              <p className="onboarding__hint">Leave this off and the Project Details tab stays hidden. You can turn it on later in Configuration.</p>
             </fieldset>
           )}
 

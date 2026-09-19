@@ -1,12 +1,17 @@
+import { randomUUID } from "node:crypto";
 import {
   ConfigurationScopeTypeSchema,
+  FeatureFlagsSchema,
   HOST_SCOPE_ID,
   RemoteAccessSettingsSchema,
   ThemePreferenceSchema,
   TokenPermissionSchema,
   TokenRoleSchema,
+  UserPermissionSetSchema,
+  validatePermissionSets,
   type ConfigurationScopeType,
   type TokenPermission,
+  type UserPermissionSet,
 } from "@konductor/schema";
 import {
   createAccessToken,
@@ -22,8 +27,10 @@ import {
   readConfigurationState,
   revokeAccessToken,
   setAuthenticationEnabled,
+  updateFeatureFlags,
   updateGeneralConfiguration,
   updateRemoteConfiguration,
+  updateAuthUserPermissionSets,
   updateAuthUserTodoPins,
   removeProviderSecret,
   writeProviderSecret,
@@ -77,6 +84,40 @@ function scopedProjectIds(
 ): string[] {
   if (scopeType === "project") return [scopeId];
   return (rawProjects ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+}
+
+/**
+ * Validates the permission sets a user form submits. Ids are assigned here when the
+ * client omits them, projects must be registered, and no project may sit in two sets.
+ */
+async function resolvePermissionSets(raw: unknown): Promise<UserPermissionSet[]> {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new ApiError("Permission sets must be a list.", { status: 400, code: "PERMISSION_SETS_INVALID" });
+  }
+  const sets: UserPermissionSet[] = [];
+  const details: string[] = [];
+  raw.forEach((entry, index) => {
+    const candidate = typeof entry === "object" && entry !== null ? entry as Record<string, unknown> : {};
+    const parsed = UserPermissionSetSchema.safeParse({ id: randomUUID(), ...candidate });
+    if (parsed.success) sets.push(parsed.data);
+    else details.push(...parsed.error.errors.map((issue) => `Set ${index + 1} ${issue.path.join(".")}: ${issue.message}`));
+  });
+  details.push(...validatePermissionSets(sets));
+  if (details.length > 0) {
+    throw new ApiError("Permission sets are invalid.", { status: 400, code: "PERMISSION_SETS_INVALID", details });
+  }
+  const projectIds = [...new Set(sets.flatMap((set) => set.project_ids))];
+  const missing = (await Promise.all(projectIds.map(async (id) => await getProject(id) ? null : id)))
+    .filter((id): id is string => id !== null);
+  if (missing.length > 0) {
+    throw new ApiError("One or more permission-set projects are not registered.", {
+      status: 400,
+      code: "PERMISSION_SET_PROJECT_INVALID",
+      details: missing,
+    });
+  }
+  return sets;
 }
 
 function githubSecretScope(scopeType: ConfigurationScopeType, scopeId: string): string {
@@ -155,6 +196,27 @@ export function registerConfigurationRoutes(router: Router): void {
       });
     }
     return json(await updatePortSettings(scopeType, scopeId, ports));
+  });
+
+  // Which tabs show up in the dashboard is host-wide, same as ports.
+  router.put("/api/config/:scopeType/:scopeId/features", async ({ params, request }) => {
+    const scopeId = params["scopeId"]!;
+    const scopeType = await resolveScope(params["scopeType"]!, scopeId);
+    if (scopeType !== "host") {
+      throw new ApiError("Feature toggles are host-wide; use the host/local scope.", {
+        status: 400,
+        code: "FEATURES_SCOPE_INVALID",
+      });
+    }
+    const parsed = FeatureFlagsSchema.safeParse(await readJsonBody<unknown>(request));
+    if (!parsed.success) {
+      throw new ApiError("Feature toggles are invalid.", {
+        status: 400,
+        code: "FEATURES_INVALID",
+        details: parsed.error.errors.map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+      });
+    }
+    return json(await updateFeatureFlags(scopeType, scopeId, parsed.data));
   });
 
   router.put("/api/config/:scopeType/:scopeId/auth", async ({ params, request }) => {
@@ -248,6 +310,7 @@ export function registerConfigurationRoutes(router: Router): void {
       email?: string;
       password?: string;
       role?: "admin" | "member";
+      permission_sets?: unknown;
     }>(request);
     if (!body.display_name?.trim() || !body.email?.trim() || !body.password) {
       throw new ApiError("Name, email, and password are required.", {
@@ -255,6 +318,7 @@ export function registerConfigurationRoutes(router: Router): void {
         code: "AUTH_USER_FIELDS_REQUIRED",
       });
     }
+    const permissionSets = await resolvePermissionSets(body.permission_sets);
     try {
       return json(await createAuthUser({
         scope_type: scopeType,
@@ -263,12 +327,34 @@ export function registerConfigurationRoutes(router: Router): void {
         email: body.email,
         password: body.password,
         ...(body.role ? { role: body.role } : {}),
+        permission_sets: permissionSets,
       }), 201);
     } catch (error) {
       throw new ApiError(error instanceof Error ? error.message : String(error), {
         status: 400,
         code: "AUTH_USER_INVALID",
       });
+    }
+  });
+
+  router.put("/api/config/:scopeType/:scopeId/auth/users/:userId/permission-sets", async ({ params, request }) => {
+    const scopeId = params["scopeId"]!;
+    const scopeType = await resolveScope(params["scopeType"]!, scopeId);
+    requireProjectSpace(scopeType, "User management");
+    const body = await readJsonBody<{ permission_sets?: unknown }>(request);
+    const permissionSets = await resolvePermissionSets(body.permission_sets ?? []);
+    try {
+      return json(await updateAuthUserPermissionSets({
+        scope_type: scopeType,
+        scope_id: scopeId,
+        user_id: params["userId"]!,
+        permission_sets: permissionSets,
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ApiError(message, message.includes("not found")
+        ? { status: 404, code: "AUTH_USER_NOT_FOUND" }
+        : { status: 400, code: "PERMISSION_SETS_INVALID" });
     }
   });
 

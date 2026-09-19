@@ -1,6 +1,7 @@
 import type {
   AgentProfile,
   AssetLibrary,
+  AssetBucket,
   AssetManagerConfig,
   AssetMetadata,
   AssetVariation,
@@ -24,6 +25,8 @@ import type {
   AuthUser,
   ConfigurationScopeType,
   ConfigurationState,
+  FeatureFlags,
+  UserPermissionSet,
   RemoteAccessSettings,
   ThemePreference,
   TokenPermission,
@@ -263,13 +266,25 @@ export async function disconnectGitHub(scope: ConfigurationScope): Promise<Confi
 
 export async function createConfigurationUser(
   scope: ConfigurationScope,
-  input: { display_name: string; email: string; password: string; role: "admin" | "member" },
+  input: { display_name: string; email: string; password: string; role: "admin" | "member"; permission_sets?: UserPermissionSet[] },
 ): Promise<ConfigurationState> {
   return requestJson(`${configurationBase(scope)}/auth/users`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   }, "Failed to create user");
+}
+
+export async function saveConfigurationUserPermissionSets(
+  scope: ConfigurationScope,
+  userId: string,
+  permissionSets: UserPermissionSet[],
+): Promise<ConfigurationState> {
+  return requestJson(`${configurationBase(scope)}/auth/users/${encodeURIComponent(userId)}/permission-sets`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ permission_sets: permissionSets }),
+  }, "Failed to save permission sets");
 }
 
 export async function saveConfigurationUserTodoPins(
@@ -924,6 +939,7 @@ export async function createAssetCategory(
   payload: {
     title: string;
     parent_id?: string | null;
+    color?: AssetBucket["color"];
     preset?: AssetManagerConfig["preset"];
     instruction?: string;
     path?: string | null;
@@ -942,7 +958,7 @@ export async function createAssetCategory(
 export async function updateAssetCategorySettings(
   id: string,
   categoryId: string,
-  settings: { prevent_agent_uploads: boolean },
+  settings: { prevent_agent_uploads?: boolean; color?: AssetBucket["color"] },
 ): Promise<void> {
   await requestJson(`/api/project/${id}/assets/buckets/${encodeURIComponent(categoryId)}/settings`, {
     method: "PUT",
@@ -1231,4 +1247,20 @@ export async function saveHostPortSettings(ports: PortSettings): Promise<PortSet
     body: JSON.stringify(ports),
   }, "Failed to save port settings");
   return state.settings.ports;
+}
+
+export async function fetchHostFeatureFlags(): Promise<FeatureFlags> {
+  return (await fetchConfiguration(HOST_SCOPE)).settings.features;
+}
+
+export const FEATURE_FLAGS_CHANGED_EVENT = "konductor:feature-flags-changed";
+
+export async function saveHostFeatureFlags(features: FeatureFlags): Promise<FeatureFlags> {
+  const state = await requestJson<ConfigurationState>(`${configurationBase(HOST_SCOPE)}/features`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(features),
+  }, "Failed to save feature settings");
+  window.dispatchEvent(new Event(FEATURE_FLAGS_CHANGED_EVENT));
+  return state.settings.features;
 }
