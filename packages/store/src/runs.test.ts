@@ -41,6 +41,12 @@ describe("migrateRunSummary", () => {
     expect(run.provider).toBeNull();
     expect(run.terminal_preview).toBe("");
     expect(run.update_count).toBe(0);
+    expect(run.feature_item_ids).toEqual([]);
+  });
+
+  test("backfills the multi-feature list from a historical primary feature", () => {
+    const run = migrateRunSummary({ ...legacy, feature_item_id: "login" });
+    expect(run.feature_item_ids).toEqual(["login"]);
   });
 
   test("assumes claude_code when the legacy kind is missing entirely", () => {

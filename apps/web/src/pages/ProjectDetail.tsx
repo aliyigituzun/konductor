@@ -110,6 +110,7 @@ export function ProjectDetail() {
         projectId={entry.id}
         snap={snap}
         config={data.config}
+        runs={data.runs}
         decisions={data.decisions}
         onDecisionsChanged={refreshProject}
         onCreateFeature={async (payload) => {

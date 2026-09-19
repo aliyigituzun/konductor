@@ -31,6 +31,7 @@ describe("resolveMcpRunContext", () => {
     })).toEqual({
       run_id: null,
       profile_id: null,
+      feature_item_ids: [],
       feature_item_id: null,
       source: "cli",
     });
@@ -41,10 +42,12 @@ describe("resolveMcpRunContext", () => {
       KONDUCTOR_RUN_ID: "run-123",
       KONDUCTOR_PROFILE_ID: "claude-default",
       KONDUCTOR_FEATURE_ITEM_ID: "dashboard-updates-feed",
+      KONDUCTOR_FEATURE_ITEM_IDS: "dashboard-updates-feed,activity-feed",
       KONDUCTOR_RUN_SOURCE: "dashboard",
     })).toEqual({
       run_id: "run-123",
       profile_id: "claude-default",
+      feature_item_ids: ["dashboard-updates-feed", "activity-feed"],
       feature_item_id: "dashboard-updates-feed",
       source: "dashboard",
     });
@@ -65,6 +68,7 @@ describe("bindMcpRunContext", () => {
   const requested = {
     run_id: "run-123",
     profile_id: "spoofed-profile",
+    feature_item_ids: ["feature-123", "feature-456"],
     feature_item_id: "feature-123",
     source: "dashboard" as const,
   };
@@ -73,6 +77,7 @@ describe("bindMcpRunContext", () => {
     expect(bindMcpRunContext(requested, identity("external", null))).toEqual({
       run_id: null,
       profile_id: null,
+      feature_item_ids: [],
       feature_item_id: null,
       source: "cli",
     });

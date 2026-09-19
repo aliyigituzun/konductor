@@ -10,6 +10,7 @@ export const RunBootstrapStateSchema = z.enum(["starting", "awaiting_operator", 
 export const RunContextSchema = z.object({
   run_id: z.string(),
   profile_id: z.string(),
+  feature_item_ids: z.array(z.string()).default([]),
   feature_item_id: z.string().nullable().optional(),
   todo_id: z.string().nullable().optional(),
   source: RunSourceSchema,
@@ -40,6 +41,12 @@ export const RunSummarySchema = z.object({
   /** Isolated checkout this agent worked in, when the profile requested one. */
   worktree_path: z.string().nullable().default(null),
   branch: z.string().nullable().default(null),
+  /** Every feature selected for this run, in the operator's launch order. */
+  feature_item_ids: z.array(z.string()).default([]),
+  /**
+   * The first selected feature, retained for older clients and single-feature
+   * integrations. New callers should use feature_item_ids.
+   */
   feature_item_id: z.string().nullable(),
   /** To-do selected when this run was launched, if any. */
   todo_id: z.string().nullable().optional(),

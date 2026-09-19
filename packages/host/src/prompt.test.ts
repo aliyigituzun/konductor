@@ -80,12 +80,19 @@ test("a decision hand-off block names the chosen option, rejected options, and f
 
 test("the composed brief carries feature, decision, and run metadata", async () => {
   await resolveDecision(repo, "session", { option_id: "cookies", resolved_by: "dashboard" });
-  const { text, feature_item_title } = await composePrompt(repo, "Do it", [], "login", null, "session", "run-1", "demo", profile, "Claude Code", "dashboard", true);
+  const { text, feature_item_title } = await composePrompt(repo, "Do it", [], ["login"], null, "session", "run-1", "demo", profile, "Claude Code", "dashboard", true);
   expect(feature_item_title).toBe("Login");
-  const order = ["## Selected Feature Item", "## Decision Hand-off", "## Required Workflow", "## Operator Prompt", "Do it", "feature_item_id: login", "decision_id: session"]
+  const order = ["## Selected Feature Item", "## Decision Hand-off", "## Required Workflow", "## Operator Prompt", "Do it", "feature_item_ids: login", "decision_id: session"]
     .map((marker) => text.indexOf(marker));
   expect(order.every((index) => index >= 0)).toBe(true);
   expect([...order].sort((a, b) => a - b)).toEqual(order);
+});
+
+test("a multi-feature brief includes each selected feature", async () => {
+  const { text } = await composePrompt(repo, "Do both", [], ["login", "refresh"], null, null, "run-2", "demo", profile, "Claude Code", "dashboard", true);
+  expect(text).toContain("Title: Login");
+  expect(text).toContain("Title: Token refresh");
+  expect(text).toContain("feature_item_ids: login, refresh");
 });
 
 test("a to-do brief includes its related feature and managed asset content routes", async () => {
