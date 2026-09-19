@@ -1,7 +1,8 @@
 import { listProjectRuns, readGlobalRunSummary, readRunLog } from "@konductor/store";
 import { ApiError, json, readJsonBody, type Router } from "../router.js";
-import { proxyToHost, fetchHostHealth } from "../host-client.js";
+import { proxyToHost, ensureHostRunning, fetchHostHealth } from "../host-client.js";
 import { requireProject } from "./projects.js";
+import { adapterCatalog, resolveAdapter, setupAdapter } from "@konductor/agents";
 
 /**
  * Run and fleet routes.
@@ -15,6 +16,7 @@ export function registerRunRoutes(router: Router): void {
 
   router.post("/api/project/:id/runs", async ({ params, request }) => {
     const entry = await requireProject(params["id"]!);
+    await ensureHostRunning(entry.repo_path);
     return proxyToHost(`/projects/${encodeURIComponent(entry.id)}/runs`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -54,7 +56,31 @@ export function registerRunRoutes(router: Router): void {
 
   router.get("/api/project/:id/adapters", async ({ params }) => {
     const entry = await requireProject(params["id"]!);
-    return proxyToHost(`/adapters?repo=${encodeURIComponent(entry.repo_path)}`);
+    return json(await adapterCatalog(entry.repo_path));
+  });
+
+  router.post("/api/project/:id/adapters/:adapterId/setup", async ({ params, request }) => {
+    const entry = await requireProject(params["id"]!);
+    let manifest;
+    try {
+      manifest = await resolveAdapter(params["adapterId"]!, entry.repo_path);
+    } catch (error) {
+      throw new ApiError(error instanceof Error ? error.message : String(error), {
+        status: 404,
+        code: "ADAPTER_NOT_FOUND",
+      });
+    }
+    try {
+      const body = await readJsonBody<{ install_missing_binary?: boolean }>(request);
+      return json(await setupAdapter(manifest, {
+        installMissingBinary: body.install_missing_binary === true,
+      }));
+    } catch (error) {
+      throw new ApiError(error instanceof Error ? error.message : String(error), {
+        status: 400,
+        code: "ADAPTER_SETUP_FAILED",
+      });
+    }
   });
 
   router.post("/api/agent/:slug/send", async ({ params, request }) => {
@@ -66,6 +92,18 @@ export function registerRunRoutes(router: Router): void {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text: body.text }),
+    });
+  });
+
+  router.post("/api/agent/:slug/respond", async ({ params, request }) => {
+    const body = await readJsonBody<{ action?: "accept" | "cancel" }>(request);
+    if (body.action !== "accept" && body.action !== "cancel") {
+      throw new ApiError("Response action must be accept or cancel.", { status: 400, code: "INVALID_DIALOG_ACTION" });
+    }
+    return proxyToHost(`/agents/${encodeURIComponent(params["slug"]!)}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
   });
 

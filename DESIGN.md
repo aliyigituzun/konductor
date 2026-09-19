@@ -1,85 +1,88 @@
 # Konductor Design Direction
 
-## Design Goal
+## Visual Character
 
-Konductor should feel like an operational control surface for software delivery, now including local Claude orchestration.
+Konductor is a GitHub- and code-editor-like control surface for local
+agent-assisted delivery: calm, compact, neutral, and operational. Project state,
+blockers, active work, and the relevant terminal context should be easy to scan.
 
-The UI should make four things obvious:
+### Core rules
 
-1. current project state
-2. active blockers and decisions
-3. what Claude is working on right now
-4. what command and terminal output were produced
+- Use GitHub-like surfaces, borders, underline tabs, tables, and compact controls.
+- Use editor-like navigation: a persistent project header, a Status sidebar, and a
+  file tree with a line-numbered reader in Project Details.
+- Light and dark are first-class themes. CSS variables in
+  `apps/web/src/styles/tokens.css` define both palettes. Configuration offers system,
+  light, and dark choices; system follows `prefers-color-scheme`.
+- Keep the 14px UI type scale, mono type for code and terminal output, 40px data
+  rows, 6px radii, and 52px header.
+- Prefer labels, counts, and short empty states. Reserve colour for semantic state
+  and destructive actions.
+- Shared primitives belong in `styles/ui.css`; component styles are co-located.
+  Avoid gradients, large shadows, fake terminal chrome, and decorative animation.
 
-## Core Visual Rules
-
-- keep the neutral editorial palette
-- stay compact and information-dense
-- treat the new terminal view as a debugging panel, not a hero element
-- keep the header short and the tabs explicit
-
-## Dashboard Additions
+## Navigation and Surfaces
 
 ### Portfolio
 
-- keep the table layout
-- add active agent count
-- add per-project info access
+The table-first overview shows project state, blockers, activity, token use, and a
+direct path-information affordance. Its bottom-left Project Profile switcher is the
+only place a profile can be switched and the entry point for Project Profile
+configuration.
 
-### Project Tabs
+### Project navigation
 
-- `Status`
-- `Features`
-- `Agents`
-- `Project Details`
+The project header contains underline tabs for Status, Features, Agents, Assets,
+Reviews, and Project Details, plus a configuration control for project-scoped general,
+integrations, remote, token, and authentication settings. On small screens, preserve access to all
+tabs before adding decoration or secondary controls.
 
-### Features Tab
+- Status uses a left “On this page” navigator for updates, blockers, decisions,
+  dependencies, token use, and activity. Decision rows open one dialog: open
+  decisions offer option cards, feature links, features to create, rationale, and an
+  optional agent hand-off; resolved decisions are read-only with their outcome.
+- Features keeps feature work and its launch context together. Feature phases are
+  multi-select filters above the category grid; selecting several phases shows the
+  union of their features and hides categories without matches.
+- Agents is the operator console: harness-first launch, configuration, active fleet,
+  and completed tasks.
+- Assets is an integrated project workspace, never a separate studio.
+- Reviews stacks three sections: preview instances (branch, port, status, output),
+  review links (shown once, then listed with state), and change requests with an
+  inline status control. The customer page at `/review/:token` frames the preview,
+  keeps the page list and pointer inspector at the sides, and never shows operator
+  controls.
+- Project Details uses a lazy file tree and a readable markdown, image, PDF, or text
+  viewer. Hide `.git`, `node_modules`, and build output.
 
-- feature cards remain the entry point
-- item rows become selectable
-- a launch panel sits beside the cards
-- the panel must make it obvious which feature item Claude will receive
+### Agent inspection
 
-### Agents Tab
+Surface the harness, project, tmux pane, branch, status, and attach command. The
+dashboard terminal is a read-and-send mirror, not a full browser terminal. Keep
+inspection clear and utilitarian.
 
-The Agents tab should read like an operator console:
+### Asset manager
 
-- prompt packs summary
-- Claude profile summary
-- launch form
-- running agents
-- past agent tasks
-- terminal/debug panel
+The locked state explains what enabling the feature does. The active workspace is
+a drive-style explorer: the section header is a breadcrumb (`Assets › 3D ›
+Characters`) whose segments navigate up, the body lists child folders before the
+assets of the current folder, and the page grows downward rather than scrolling
+inside the section. Loose assets appear inline at the root; the word
+"Uncategorized" is never shown. Folder tools (instruction, agent-upload lock,
+metadata, move, delete) sit in a single row under the header only while inside a
+folder. Assets and folders move through a destination picker, not drag and drop. Asset
+approval queues and public asset sharing remain placeholders, not implied
+functionality.
 
-### Terminal Panel
+### Project profiles
 
-This is read-only and explicitly for debugging. It should show:
-
-- exact launch command
-- sanitized env summary
-- rolling stdout/stderr
-- exit state
-
-### Project Info Surface
-
-Each project needs a direct path-inspection affordance that reveals:
-
-- repo-local Konductor files
-- home-directory registry path
-- home-directory host path
-
-This is for debugging and operator trust, not for marketing polish.
+Project Profiles are account-like portfolio contexts and must not be confused with
+agent profiles. The current switcher is an overview-only browser prototype. It must
+not appear in a project header or on project, agent, asset, or review pages.
 
 ## Interaction Guidance
 
-- buttons should be clear and utilitarian
-- hover states should be subtle
-- active run controls should stand out, but not dominate the page
-- destructive controls such as stop/delete should use semantic red
-
-## What To Avoid
-
-- no oversized launch hero
-- no fake terminal chrome
-- no decorative animations in the terminal/debug surface
-- no hidden agent state behind nested interactions
+- Use clear utilitarian buttons and subtle hover states.
+- Make current action, failure, and recovery information obvious.
+- Keep destructive actions explicit and semantic red.
+- Do not hide agent state behind nested interactions or marketing-style hero blocks.

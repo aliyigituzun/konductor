@@ -29,12 +29,43 @@ export class TmuxError extends Error {
   readonly stderr: string;
 
   constructor(argv: string[], code: number, stderr: string) {
-    super(`tmux ${argv.join(" ")} failed (exit ${code}): ${stderr.trim() || "no stderr"}`);
+    const safeArgv = redactTmuxArgs(argv);
+    const safeStderr = redactAccessTokens(stderr);
+    super(`tmux ${safeArgv.join(" ")} failed (exit ${code}): ${safeStderr.trim() || "no stderr"}`);
     this.name = "TmuxError";
-    this.argv = argv;
+    this.argv = safeArgv;
     this.code = code;
-    this.stderr = stderr;
+    this.stderr = safeStderr;
   }
+}
+
+function redactAccessTokens(value: string): string {
+  return value.replace(/knd_(?:int|ext)_[A-Za-z0-9_-]+/g, "[redacted-access-token]");
+}
+
+/** Error messages need the operation shape, never the environment values. */
+export function redactTmuxArgs(argv: string[]): string[] {
+  const safe: string[] = [];
+  let environmentCount = 0;
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index]!;
+    if (argument === "-e" && index + 1 < argv.length) {
+      environmentCount += 1;
+      index += 1;
+      continue;
+    }
+    const previous = argv[index - 1] ?? "";
+    if (/^--?(?:token|secret|password|api-key)$/i.test(previous)) {
+      safe.push("[redacted]");
+      continue;
+    }
+    safe.push(redactAccessTokens(argument));
+  }
+  if (environmentCount > 0) {
+    const commandBoundary = safe.indexOf("--");
+    safe.splice(commandBoundary >= 0 ? commandBoundary : safe.length, 0, `[${environmentCount} environment variables redacted]`);
+  }
+  return safe;
 }
 
 export type TmuxResult = { code: number; stdout: string; stderr: string };
@@ -80,10 +111,10 @@ export async function sessionExists(session: string): Promise<boolean> {
 /**
  * Size a detached session generously.
  *
- * With no client attached tmux falls back to 80x24, which is too small to split into
- * anything an agent TUI can render in — every agent would land in its own window
- * instead of a grid. tmux resizes the session to the real terminal as soon as
- * someone attaches, so this only affects the headless case.
+ * With no client attached tmux falls back to 80x24, which is too cramped for an
+ * agent TUI to render in and would wrap its screen text — which is what the status
+ * classifier reads. tmux resizes the session to the real terminal as soon as someone
+ * attaches, so this only affects the time nobody is looking.
  */
 export const DETACHED_WIDTH = 250;
 export const DETACHED_HEIGHT = 64;
@@ -153,70 +184,34 @@ export async function findPane(session: string, paneId: string): Promise<TmuxPan
   return panes.find((pane) => pane.pane_id === paneId) ?? null;
 }
 
-/**
- * Choose which way to cut a pane in half.
- *
- * A terminal cell is roughly twice as tall as it is wide, so a pane only *looks*
- * wide enough to split vertically when its column count is well past double its row
- * count. Splitting horizontally below that, or when either half would fall under a
- * readable 80 columns, produces sliver columns an agent TUI cannot render into.
- */
-export function chooseSplitDirection(
-  width: number,
-  height: number,
-  minColumns = 80,
-): "horizontal" | "vertical" {
-  const halfWidth = Math.floor((width - 1) / 2);
-  if (width >= 2 * height && halfWidth >= minColumns) return "horizontal";
-  return "vertical";
-}
-
-/** The pane with the most cells — the one to split so the grid stays balanced. */
-export function pickLargestPane(panes: TmuxPane[]): TmuxPane | null {
-  const live = panes.filter((pane) => !pane.dead);
-  if (live.length === 0) return null;
-  return live.reduce((largest, pane) =>
-    pane.width * pane.height > largest.width * largest.height ? pane : largest,
-  );
-}
-
 export type SpawnPaneOptions = {
   session: string;
   cwd: string;
-  /** Window/pane label, shown in the tmux status bar. */
+  /** Window name, shown in the tmux status bar; the agent's slug. */
   name: string;
   env: Record<string, string>;
   /** argv of the agent process. */
   command: string[];
 };
 
+export type SpawnedPane = { pane_id: string; window_id: string };
+
+const SPAWN_FORMAT = "#{pane_id}\t#{window_id}";
+
 /** Build the tmux argv that opens a new window running `command`. Pure, for tests. */
 export function newWindowArgs(options: SpawnPaneOptions): string[] {
   return [
     "new-window",
-    "-t", `=${options.session}`,
+    "-d",
+    // new-window accepts a target-window, not merely a target-session. The trailing
+    // colon says "this exact session, next free window index"; without it tmux
+    // resolves the session's current window (usually index 0) and fails because that
+    // index is already occupied by the placeholder window.
+    "-t", `=${options.session}:`,
     "-c", options.cwd,
     "-n", options.name,
     ...envArgs(options.env),
-    "-P", "-F", "#{pane_id}",
-    "--",
-    ...options.command,
-  ];
-}
-
-/** Build the tmux argv that splits `paneId` and runs `command` in the new half. */
-export function splitWindowArgs(
-  paneId: string,
-  direction: "horizontal" | "vertical",
-  options: SpawnPaneOptions,
-): string[] {
-  return [
-    "split-window",
-    "-t", paneId,
-    direction === "horizontal" ? "-h" : "-v",
-    "-c", options.cwd,
-    ...envArgs(options.env),
-    "-P", "-F", "#{pane_id}",
+    "-P", "-F", SPAWN_FORMAT,
     "--",
     ...options.command,
   ];
@@ -226,31 +221,49 @@ function envArgs(env: Record<string, string>): string[] {
   return Object.entries(env).flatMap(([key, value]) => ["-e", `${key}=${value}`]);
 }
 
+/** Parse the `-P -F SPAWN_FORMAT` line tmux prints for a new window. Exported for tests. */
+export function parseSpawnLine(line: string): SpawnedPane | null {
+  const [paneId, windowId] = line.trim().split("\t");
+  if (!paneId?.startsWith("%") || !windowId?.startsWith("@")) return null;
+  return { pane_id: paneId, window_id: windowId };
+}
+
 /**
- * Open a pane running `command`, splitting the largest existing pane so a fleet
- * forms a readable grid instead of ever-narrowing columns. Falls back to a new
- * window when nothing is splittable or the split would be too cramped.
+ * Open a window running `command`.
+ *
+ * Each agent gets a whole window rather than a split of a shared one: an agent TUI
+ * needs the full terminal to render, the operator attaches to one agent at a time,
+ * and a window named after the slug is what `tmux attach` can be pointed at. The
+ * window is created detached (`-d`) so opening an agent never yanks focus from
+ * whatever an attached operator is looking at.
  */
-export async function spawnPane(options: SpawnPaneOptions): Promise<string> {
+export async function spawnPane(options: SpawnPaneOptions): Promise<SpawnedPane> {
   await ensureSession(options.session, options.cwd);
-
-  const largest = pickLargestPane(await listPanes(options.session));
-  if (largest) {
-    const direction = chooseSplitDirection(largest.width, largest.height);
-    const fitsVertically = Math.floor((largest.height - 1) / 2) >= 8;
-    const fitsHorizontally = Math.floor((largest.width - 1) / 2) >= 80;
-    if ((direction === "vertical" && fitsVertically) || (direction === "horizontal" && fitsHorizontally)) {
-      const paneId = (await tmux(splitWindowArgs(largest.pane_id, direction, options))).trim();
-      await keepPaneOnExit(paneId);
-      await renamePane(paneId, options.name);
-      return paneId;
-    }
+  const spawned = parseSpawnLine(await tmux(newWindowArgs(options)));
+  if (!spawned) {
+    throw new TmuxError(newWindowArgs(options), 0, "tmux did not report the new window's ids");
   }
+  await keepPaneOnExit(spawned.pane_id);
+  await renamePane(spawned.pane_id, options.name);
+  return spawned;
+}
 
-  const paneId = (await tmux(newWindowArgs(options))).trim();
-  await keepPaneOnExit(paneId);
-  await renamePane(paneId, options.name);
-  return paneId;
+/**
+ * The shell command that puts an operator in front of one agent.
+ *
+ * `attach-session` then `select-window` are chained with `\;` so one paste lands on
+ * the right window, whichever one the session last showed. The window id is
+ * durable, so the command stays valid for the life of the agent.
+ *
+ * The exact-match target is always single-quoted: zsh expands a bare `=name` as a
+ * command-path lookup, which would turn the paste into "konductor not found".
+ */
+export function attachCommand(session: string, windowId: string): string {
+  return `tmux attach-session -t ${shellQuote(`=${session}`)} \\; select-window -t ${windowId}`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export async function renamePane(paneId: string, title: string): Promise<void> {

@@ -25,7 +25,6 @@ async function readPid(): Promise<number | null> {
 }
 
 async function start(cwd: string): Promise<void> {
-  // Verify this is an initialized project
   if (!existsSync(join(cwd, ".konductor"))) {
     console.error(
       `${fmt.red("✗")} No .konductor/ found here. Run ${fmt.bold("konductor init")} first.`
@@ -33,7 +32,6 @@ async function start(cwd: string): Promise<void> {
     process.exit(1);
   }
 
-  // Check if already running
   const existing = await readPid();
   if (existing && isRunning(existing)) {
     console.log(
@@ -45,7 +43,6 @@ async function start(cwd: string): Promise<void> {
     return;
   }
 
-  // Ensure global dir exists
   if (!existsSync(GLOBAL_DIR)) {
     const { mkdir } = await import("node:fs/promises");
     await mkdir(GLOBAL_DIR, { recursive: true });

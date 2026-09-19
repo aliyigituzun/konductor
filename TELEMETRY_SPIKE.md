@@ -1,14 +1,15 @@
-# Konductor Telemetry Spike
+# Konductor Telemetry Validation
 
 ## Purpose
 
-Before implementation starts, Konductor should verify exactly which Claude Code signals are available through OpenTelemetry and which ones are only aspirational. This spike is the fastest way to de-risk stage 1.
+Verify which telemetry signals are available for each supported agent adapter and
+which remain best-effort. The dashboard must not present inferred signals as facts.
 
 ## What We Need To Verify
 
 ### 1. Token Usage
 
-Verify that Claude Code OTEL output exposes:
+Verify that an adapter's telemetry output exposes:
 
 - input tokens
 - output tokens
@@ -17,7 +18,7 @@ Verify that Claude Code OTEL output exposes:
 
 Expected outcome:
 
-- token usage is treated as a reliable stage 1 metric
+- token usage is marked verified only when the adapter supplies it reliably
 
 ### 2. Tool Activity
 
@@ -43,7 +44,7 @@ Expected outcome:
 
 ### 4. Context Usage
 
-Verify whether Claude Code OTEL output or adjacent local state exposes:
+Verify whether adapter telemetry or adjacent runtime state exposes:
 
 - context window size
 - current context usage
@@ -51,7 +52,7 @@ Verify whether Claude Code OTEL output or adjacent local state exposes:
 
 Expected outcome:
 
-- if available, context pressure is included in stage 1
+- if available, context pressure is included in the dashboard
 - if not, this moves to later phases
 
 ### 5. Compact Count
@@ -60,11 +61,11 @@ Verify whether there is any reliable way to count compaction events.
 
 Expected outcome:
 
-- if there is no explicit signal, do not fake this metric in stage 1
+- if there is no explicit signal, do not fake this metric
 
 ## Test Procedure
 
-1. Run Claude Code in a sample repo with OTEL export enabled.
+1. Run one supported adapter in a sample project with telemetry export enabled.
 2. Execute a short session that:
    - reads docs
    - reads code files
@@ -85,11 +86,11 @@ Expected outcome:
 - context usage is either verified or explicitly deferred
 - compact count is either verified or explicitly deferred
 
-## Stage 1 Product Rule
+## Product Rule
 
-Konductor should only advertise telemetry signals that pass this spike. Everything else should be shown as unavailable or deferred.
+Konductor should only advertise telemetry signals that pass this validation. Everything else should be shown as unavailable or best-effort.
 
-## Source Docs Used For The Assumption
+## Adapter References
 
-- https://code.claude.com/docs/en/monitoring-usage
-- https://code.claude.com/docs/en/costs
+Record the adapter version, telemetry configuration, and source documentation with
+each validation result. Do not generalize one adapter's signals to another.

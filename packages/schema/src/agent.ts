@@ -1,15 +1,13 @@
 import { z } from "zod";
 
 /**
- * How an agent process is driven.
+ * What backs a live agent.
  *
- * - `pane`     the agent runs interactively in a tmux pane. Konductor can type into
- *              it, read its screen, and the operator can `tmux attach` to take over.
- * - `headless` the agent runs once, non-interactively, over pipes and exits.
+ * Every agent Konductor starts runs interactively in a tmux pane: Konductor types
+ * into it, reads its screen, and the operator can attach to take over. `headless`
+ * survives only so run history recorded by the retired one-shot pipe mode still
+ * parses; nothing launches that way any more.
  */
-export const AgentModeSchema = z.enum(["pane", "headless"]);
-
-/** The transport backing a live agent. Mirrors AgentMode, named for the mechanism. */
 export const AgentTransportSchema = z.enum(["tmux", "headless"]);
 
 /**
@@ -38,6 +36,10 @@ export const AdapterMcpSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("codex_toml") }),
   /** `<repo>/opencode.json`, `"mcp"` key. */
   z.object({ kind: z.literal("opencode_json") }),
+  /** `~/.gemini/settings.json`, `"mcpServers"` key. */
+  z.object({ kind: z.literal("gemini_settings") }),
+  /** Pi with the pi-mcp-adapter package, using `$PI_CODING_AGENT_DIR/mcp.json`. */
+  z.object({ kind: z.literal("pi_mcp_json") }),
   /** The agent has no MCP support, or Konductor should not touch its config. */
   z.object({ kind: z.literal("none") }),
 ]);
@@ -53,8 +55,10 @@ export const AdapterTelemetrySchema = z.discriminatedUnion("kind", [
  * One way of invoking the adapter's binary.
  *
  * `args` may contain placeholders, substituted at launch:
- *   {{prompt}}      the composed prompt text
- *   {{model}}       the resolved model id (the entry is dropped when no model is set)
+ *   {{provider}}    the resolved provider id (the entry, and the flag before it,
+ *                   are dropped when no provider is supplied)
+ *   {{model}}       the resolved model string (the entry, and the flag before it,
+ *                   are dropped when the profile pins no model)
  *   {{session_id}}  prior session to resume
  *   {{task_file}}   path to the brief written into the working directory
  */
@@ -62,8 +66,39 @@ export const AdapterInvocationSchema = z.object({
   args: z.array(z.string()).default([]),
 });
 
-export const AgentAdapterManifestSchema = z.object({
-  schema_version: z.enum(["0.3.0"]).default("0.3.0"),
+/** A model the operator can pick for a provider. Ids are what the CLI accepts. */
+export const ModelOptionSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().optional(),
+});
+
+/**
+ * A model provider a harness can talk to, with the models it is known to accept.
+ *
+ * `models` is a catalog for the picker, not a whitelist: providers ship models
+ * faster than a manifest can be updated, so a profile may name any model id and
+ * the harness decides whether it exists.
+ */
+export const AdapterProviderSchema = z.object({
+  /** Stable id referenced by a profile's `provider` field, e.g. "anthropic". */
+  id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/, "provider id must be kebab/snake case"),
+  title: z.string(),
+  models: z.array(ModelOptionSchema).default([]),
+});
+
+/**
+ * How the chosen provider and model are turned into the `{{model}}` argument.
+ *
+ * - `id`            the bare model id; the harness already knows its provider or
+ *                   receives it through a separate `{{provider}}` argument
+ *                   (Claude Code, Codex, Gemini CLI, Pi).
+ * - `provider/id`   the provider prefixed onto the model, which is how
+ *                   multi-provider harnesses such as OpenCode address models.
+ */
+export const ModelFormatSchema = z.enum(["id", "provider/id"]);
+
+const AgentAdapterManifestCurrentSchema = z.object({
+  schema_version: z.enum(["0.4.0"]).default("0.4.0"),
   /** Stable id referenced by an agent profile's `adapter` field. */
   id: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/, "adapter id must be kebab/snake case"),
   title: z.string(),
@@ -78,12 +113,17 @@ export const AgentAdapterManifestSchema = z.object({
   verified: z.boolean().default(false),
   /** Argv that prints a version string, used for detection. */
   detect: z.array(z.string()).default(["--version"]),
-  /** Interactive TUI invocation. Null when the agent has no interactive mode. */
-  interactive: AdapterInvocationSchema.nullable().default(null),
-  /** One-shot invocation. Null when the agent has no headless mode. */
-  headless: AdapterInvocationSchema.nullable().default(null),
+  /** The interactive TUI invocation that opens in the agent's pane. */
+  launch: AdapterInvocationSchema.default({ args: [] }),
   /** Resume a previous session. Null when unsupported. */
   resume: AdapterInvocationSchema.nullable().default(null),
+  /**
+   * Providers this harness can drive. A single entry means the harness is bound to
+   * that provider — Claude Code only ever talks to Anthropic — and a profile that
+   * names any other provider is rejected at launch.
+   */
+  providers: z.array(AdapterProviderSchema).min(1, "an adapter needs at least one provider"),
+  model_format: ModelFormatSchema.default("id"),
   mcp: AdapterMcpSchema.default({ kind: "none" }),
   telemetry: AdapterTelemetrySchema.default({ kind: "none" }),
   /**
@@ -110,24 +150,41 @@ export const AgentAdapterManifestSchema = z.object({
     .default({ blocked: [], working: [], idle: [], done: [] }),
 });
 
-/** A live agent's addressable handle. */
+/**
+ * Keep project/user adapter manifests from the pane/headless era usable.
+ *
+ * Version 0.3 did not declare providers and named the interactive invocation
+ * `interactive`. A neutral default provider preserves the old pass-through model
+ * behavior until the operator chooses to enrich the manifest.
+ */
+export const AgentAdapterManifestSchema = z.preprocess((input) => {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+  const value = input as Record<string, unknown>;
+  if (value.schema_version !== "0.3.0") return input;
+  return {
+    ...value,
+    schema_version: "0.4.0",
+    launch: value.launch ?? value.interactive ?? value.headless ?? { args: [] },
+    providers: value.providers ?? [{ id: "default", title: "Default", models: [] }],
+  };
+}, AgentAdapterManifestCurrentSchema);
+
+/** A live agent's addressable handle: the tmux pane it runs in. */
 export const AgentHandleSchema = z.object({
   slug: z.string(),
   run_id: z.string(),
-  transport: AgentTransportSchema,
-  /** tmux session holding the pane, when transport is "tmux". */
-  session_name: z.string().nullable().default(null),
-  /** Durable tmux pane id, e.g. "%12". */
-  pane_id: z.string().nullable().default(null),
-  /** OS pid, when transport is "headless". */
-  pid: z.number().int().nullable().default(null),
+  session_name: z.string(),
+  window_id: z.string(),
+  pane_id: z.string(),
 });
 
-export type AgentMode = z.infer<typeof AgentModeSchema>;
 export type AgentTransport = z.infer<typeof AgentTransportSchema>;
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 export type AdapterMcp = z.infer<typeof AdapterMcpSchema>;
 export type AdapterTelemetry = z.infer<typeof AdapterTelemetrySchema>;
 export type AdapterInvocation = z.infer<typeof AdapterInvocationSchema>;
+export type ModelOption = z.infer<typeof ModelOptionSchema>;
+export type AdapterProvider = z.infer<typeof AdapterProviderSchema>;
+export type ModelFormat = z.infer<typeof ModelFormatSchema>;
 export type AgentAdapterManifest = z.infer<typeof AgentAdapterManifestSchema>;
 export type AgentHandle = z.infer<typeof AgentHandleSchema>;

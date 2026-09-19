@@ -1,13 +1,68 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { configPath, repoLocal, globalRegistry, readRegistry, readConfig, hostGlobal, isProjectReachable } from "@konductor/store";
-import { StatusSnapshotSchema } from "@konductor/schema";
+import { configPath, repoLocal, globalRegistry, readRegistry, readConfig, readStatus, hostGlobal, isProjectReachable } from "@konductor/store";
 import { fmt, header, checkMark, warnMark } from "../ui/format.js";
 import { hostFetch } from "./host-client.js";
-import { loadAdapters, tmuxVersion } from "@konductor/agents";
+import { adapterSetupStatus, loadAdapters, resolveModel, tmuxVersion } from "@konductor/agents";
 
 type CheckResult = { label: string; pass: boolean; warn: boolean; message: string };
+
+/**
+ * One check per profile: does its provider/model choice fit its harness?
+ *
+ * A single-provider harness with another vendor's provider configured would fail
+ * every launch with the same error; better to read it here once.
+ */
+async function profileModelChecks(cwd: string): Promise<CheckResult[]> {
+  const cfg = await readConfig(cwd);
+  const registry = await loadAdapters(cwd);
+  return Promise.all(
+    (cfg?.agents?.profiles ?? []).map((profile) =>
+      check(`Profile "${profile.title}" provider/model fits its harness`, async () => {
+        const found = registry.adapters.find((a) => a.manifest.id === profile.adapter);
+        if (!found) return { pass: false, message: `adapter "${profile.adapter}" is not available` };
+        const selection = resolveModel(found.manifest, profile);
+        const listed = selection.model === null || selection.provider.models.some((m) => m.id === selection.model);
+        return {
+          pass: true,
+          warn: !listed,
+          message:
+            `${selection.provider.title} · ${selection.model ?? "harness default model"}` +
+            (listed ? "" : " (not in the adapter's catalog; passed through as-is)"),
+        };
+      }),
+    ),
+  );
+}
+
+async function profileSetupChecks(cwd: string): Promise<CheckResult[]> {
+  const cfg = await readConfig(cwd);
+  const registry = await loadAdapters(cwd);
+  return Promise.all(
+    (cfg?.agents?.profiles ?? [])
+      .filter((profile) => profile.default_mcp !== false)
+      .map((profile) =>
+        check(`Profile "${profile.title}" isolated MCP setup`, async () => {
+          const found = registry.adapters.find((item) => item.manifest.id === profile.adapter);
+          if (!found) return { pass: false, message: `adapter "${profile.adapter}" is not available` };
+          const setup = await adapterSetupStatus(found.manifest);
+          if (!setup.supported) {
+            return {
+              pass: false,
+              warn: true,
+              message: setup.note ?? `${found.manifest.title} has no managed MCP setup`,
+            };
+          }
+          return {
+            pass: setup.configured,
+            warn: !setup.configured,
+            message: setup.configured
+              ? setup.directory!
+              : `Run \`konductor adapters setup ${found.manifest.id}\``,
+          };
+        }),
+      ),
+  );
+}
 
 async function check(
   label: string,
@@ -41,18 +96,10 @@ export async function runDoctor(_args: string[]): Promise<void> {
       return { pass: exists, message: exists ? paths.dir : "Run `konductor init`." };
     }),
 
-    check("~/.konductor/registry.json readable", async () => {
+    check("SQLite project registry readable", async () => {
       const regPath = globalRegistry();
-      if (!existsSync(regPath)) {
-        return { pass: false, message: `Not found at ${regPath}` };
-      }
-      try {
-        const raw = await readFile(regPath, "utf-8");
-        JSON.parse(raw);
-        return { pass: true, message: regPath };
-      } catch {
-        return { pass: false, message: `Cannot parse ${regPath}` };
-      }
+      await readRegistry();
+      return { pass: true, message: regPath };
     }),
 
     check(".konductor/status/current.json exists and validates", async () => {
@@ -60,8 +107,7 @@ export async function runDoctor(_args: string[]): Promise<void> {
         return { pass: false, message: "current.json not found." };
       }
       try {
-        const raw = await readFile(paths.currentStatus, "utf-8");
-        StatusSnapshotSchema.parse(JSON.parse(raw));
+        await readStatus(cwd);
         return { pass: true, message: paths.currentStatus };
       } catch (e) {
         return { pass: false, message: `Validation failed: ${String(e)}` };
@@ -146,21 +192,17 @@ export async function runDoctor(_args: string[]): Promise<void> {
       };
     }),
 
-    check("tmux available for pane agents", async () => {
-      const cfg = await readConfig(cwd);
-      const paneProfiles = (cfg?.agents?.profiles ?? []).filter((p) => p.mode === "pane");
+    check("tmux available", async () => {
       const version = await tmuxVersion();
       if (version) return { pass: true, message: version };
-      if (paneProfiles.length === 0) {
-        return { pass: true, warn: true, message: "tmux not installed; no profiles need a pane." };
-      }
       return {
         pass: false,
-        message:
-          `tmux is not installed, but ${paneProfiles.length} profile(s) run in a pane. ` +
-          "Install tmux, or set those profiles to headless mode.",
+        message: "tmux is not installed. Every agent runs in a tmux window; install it with `brew install tmux`.",
       };
     }),
+
+    ...(await profileModelChecks(cwd)),
+    ...(await profileSetupChecks(cwd)),
 
     check("Agent adapter manifests parse", async () => {
       const registry = await loadAdapters(cwd);
@@ -179,15 +221,6 @@ export async function runDoctor(_args: string[]): Promise<void> {
       return {
         pass: false,
         message: registry.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; "),
-      };
-    }),
-
-    check("Project MCP config exists", async () => {
-      const mcpPath = join(cwd, ".mcp.json");
-      return {
-        pass: existsSync(mcpPath),
-        warn: !existsSync(mcpPath),
-        message: existsSync(mcpPath) ? mcpPath : "Missing .mcp.json — re-run konductor init",
       };
     }),
 

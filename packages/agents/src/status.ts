@@ -4,13 +4,9 @@ import type { AgentAdapterManifest, AgentStatus } from "@konductor/schema";
 export const SCREEN_TAIL_LINES = 12;
 
 export type ClassifyInput = {
-  /** Current screen contents, most recent output last. */
   screen: string;
-  /** False once the process behind the pane has exited. */
   alive: boolean;
-  /** Exit status, available only for a dead pane. */
   exitCode?: number | null;
-  /** True when the screen changed since the previous sample. */
   changed: boolean;
 };
 

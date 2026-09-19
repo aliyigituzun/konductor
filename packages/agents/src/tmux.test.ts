@@ -1,26 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
+  TmuxError,
+  attachCommand,
   captureArgs,
-  chooseSplitDirection,
   newWindowArgs,
   parsePaneLine,
-  pickLargestPane,
-  splitWindowArgs,
-  type TmuxPane,
+  parseSpawnLine,
+  redactTmuxArgs,
 } from "./tmux.js";
 import { uniqueSlug, slugify } from "./slug.js";
-
-const pane = (overrides: Partial<TmuxPane> = {}): TmuxPane => ({
-  pane_id: "%1",
-  window_id: "@1",
-  width: 100,
-  height: 40,
-  dead: false,
-  dead_status: null,
-  cwd: "/repo",
-  title: "",
-  ...overrides,
-});
 
 describe("parsePaneLine", () => {
   test("parses a tab-separated pane record", () => {
@@ -50,50 +38,6 @@ describe("parsePaneLine", () => {
   });
 });
 
-describe("chooseSplitDirection", () => {
-  test("splits a wide pane side by side", () => {
-    expect(chooseSplitDirection(400, 50)).toBe("horizontal");
-  });
-
-  test("stacks a pane that is not twice as wide as it is tall", () => {
-    // A cell is about twice as tall as it is wide, so 90x50 already reads as
-    // square on screen even though the column count is larger.
-    expect(chooseSplitDirection(90, 50)).toBe("vertical");
-  });
-
-  test("stacks rather than producing halves under 80 columns", () => {
-    expect(chooseSplitDirection(120, 20)).toBe("vertical");
-  });
-
-  test("a tall narrow pane always stacks", () => {
-    expect(chooseSplitDirection(80, 100)).toBe("vertical");
-  });
-});
-
-describe("pickLargestPane", () => {
-  test("picks the pane with the most cells", () => {
-    const largest = pickLargestPane([
-      pane({ pane_id: "%1", width: 80, height: 24 }),
-      pane({ pane_id: "%2", width: 200, height: 50 }),
-      pane({ pane_id: "%3", width: 100, height: 40 }),
-    ]);
-    expect(largest?.pane_id).toBe("%2");
-  });
-
-  test("never picks a dead pane", () => {
-    const largest = pickLargestPane([
-      pane({ pane_id: "%1", width: 500, height: 100, dead: true }),
-      pane({ pane_id: "%2", width: 80, height: 24 }),
-    ]);
-    expect(largest?.pane_id).toBe("%2");
-  });
-
-  test("returns null when nothing is alive", () => {
-    expect(pickLargestPane([])).toBeNull();
-    expect(pickLargestPane([pane({ dead: true })])).toBeNull();
-  });
-});
-
 describe("tmux argv builders", () => {
   const options = {
     session: "konductor",
@@ -105,24 +49,87 @@ describe("tmux argv builders", () => {
 
   test("new-window targets the session exactly and passes env through", () => {
     const args = newWindowArgs(options);
-    // "=konductor" is an exact-match target; without it tmux would prefix-match
-    // and could land the pane in someone else's session.
-    expect(args).toContain("=konductor");
+    // "=konductor:" exact-matches the session and leaves the window index open so
+    // tmux allocates the next free one instead of colliding with window 0.
+    expect(args[args.indexOf("-t") + 1]).toBe("=konductor:");
     expect(args).toContain("-e");
     expect(args).toContain("KONDUCTOR_RUN_ID=r1");
     // The command follows "--" so a leading-dash argument is never read as a flag.
     expect(args.slice(args.indexOf("--") + 1)).toEqual(["claude", "--model", "opus"]);
   });
 
-  test("new-window prints the durable pane id", () => {
+  test("new-window prints the durable pane and window ids", () => {
     const args = newWindowArgs(options);
     expect(args).toContain("-P");
-    expect(args[args.indexOf("-F") + 1]).toBe("#{pane_id}");
+    expect(args[args.indexOf("-F") + 1]).toBe("#{pane_id}\t#{window_id}");
   });
 
-  test("split-window maps direction onto tmux's flags", () => {
-    expect(splitWindowArgs("%4", "horizontal", options)).toContain("-h");
-    expect(splitWindowArgs("%4", "vertical", options)).toContain("-v");
+  test("new-window is created detached so it never steals an attached operator's focus", () => {
+    expect(newWindowArgs(options)).toContain("-d");
+  });
+
+  test("new-window is named after the agent's slug", () => {
+    const args = newWindowArgs(options);
+    expect(args[args.indexOf("-n") + 1]).toBe("login");
+  });
+});
+
+describe("tmux error redaction", () => {
+  test("drops environment values and access tokens from persisted errors", () => {
+    const raw = [
+      "new-window",
+      "-e",
+      "KONDUCTOR_ACCESS_TOKEN=knd_int_123456789abc_supersecret",
+      "-e",
+      "HOME=/Users/example",
+      "--",
+      "agent",
+      "--token",
+      "knd_ext_123456789abc_anothersecret",
+    ];
+    expect(redactTmuxArgs(raw)).toEqual([
+      "new-window",
+      "[2 environment variables redacted]",
+      "--",
+      "agent",
+      "--token",
+      "[redacted]",
+    ]);
+    const error = new TmuxError(raw, 1, "failed with knd_ext_123456789abc_anothersecret");
+    expect(error.message).not.toContain("supersecret");
+    expect(error.message).not.toContain("anothersecret");
+    expect(error.stderr).toBe("failed with [redacted-access-token]");
+  });
+});
+
+describe("parseSpawnLine", () => {
+  test("reads the ids tmux prints for a new window", () => {
+    expect(parseSpawnLine("%12\t@3\n")).toEqual({ pane_id: "%12", window_id: "@3" });
+  });
+
+  test("rejects output that is not a pane/window pair", () => {
+    expect(parseSpawnLine("")).toBeNull();
+    expect(parseSpawnLine("%12")).toBeNull();
+    expect(parseSpawnLine("@3\t%12")).toBeNull();
+  });
+});
+
+describe("attachCommand", () => {
+  test("attaches to the exact session and lands on the agent's window", () => {
+    expect(attachCommand("konductor", "@3")).toBe(
+      "tmux attach-session -t '=konductor' \\; select-window -t @3",
+    );
+  });
+
+  test("always quotes the exact-match target, which zsh would otherwise expand", () => {
+    // `=name` is a zsh command-path expansion; unquoted it breaks the paste.
+    expect(attachCommand("my project", "@1")).toBe(
+      "tmux attach-session -t '=my project' \\; select-window -t @1",
+    );
+  });
+
+  test("escapes a quote inside the session name", () => {
+    expect(attachCommand("it's", "@1")).toContain(`'=it'\\''s'`);
   });
 });
 

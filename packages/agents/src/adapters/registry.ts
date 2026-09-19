@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { GLOBAL_DIR } from "@konductor/store";
 import type { AgentAdapterManifest } from "@konductor/schema";
 import { AgentAdapterManifestSchema } from "@konductor/schema";
 import { builtinAdapters } from "./builtin.js";
+import { adapterSetupStatus, resolveAdapterBinary } from "../setup.js";
 
 export type AdapterSource = "builtin" | "user" | "project";
 
@@ -24,7 +25,7 @@ export type AdapterRegistry = {
 };
 
 export function userAdaptersDir(): string {
-  return join(homedir(), ".konductor", "adapters");
+  return join(GLOBAL_DIR, "adapters");
 }
 
 export function projectAdaptersDir(repoPath: string): string {
@@ -110,6 +111,30 @@ export type AdapterDetection = {
   version: string | null;
 };
 
+export type AdapterCatalogEntry = {
+  id: string;
+  title: string;
+  binary: string;
+  homepage: string | null;
+  verified: boolean;
+  source: AdapterSource;
+  manifest_path: string | null;
+  launch: string;
+  providers: AgentAdapterManifest["providers"];
+  model_format: AgentAdapterManifest["model_format"];
+  mcp: AgentAdapterManifest["mcp"]["kind"];
+  telemetry: AgentAdapterManifest["telemetry"]["kind"];
+  setup: Awaited<ReturnType<typeof adapterSetupStatus>>;
+  installed: boolean;
+  path: string | null;
+  version: string | null;
+};
+
+export type AdapterCatalog = {
+  adapters: AdapterCatalogEntry[];
+  issues: AdapterLoadIssue[];
+};
+
 /** Check whether an adapter's binary is on PATH, and what version it reports. */
 export async function detectAdapter(manifest: AgentAdapterManifest): Promise<AdapterDetection> {
   const path = Bun.which(manifest.binary);
@@ -131,4 +156,40 @@ export async function detectAdapter(manifest: AgentAdapterManifest): Promise<Ada
     // The binary exists but would not run; still installed, version unknown.
     return { installed: true, path, version: null };
   }
+}
+
+/**
+ * Describe every harness available to a project without requiring the agent host.
+ * Profile editing is configuration and must keep working while no agent is running.
+ */
+export async function adapterCatalog(repoPath?: string): Promise<AdapterCatalog> {
+  const registry = await loadAdapters(repoPath);
+  const adapters = await Promise.all(
+    registry.adapters.map(async ({ manifest, source, path: manifestPath }) => {
+      const [detection, setup] = await Promise.all([
+        detectAdapter(manifest),
+        adapterSetupStatus(manifest),
+      ]);
+      const effectiveBinary = resolveAdapterBinary(manifest);
+      return {
+        id: manifest.id,
+        title: manifest.title,
+        binary: manifest.binary,
+        homepage: manifest.homepage ?? null,
+        verified: manifest.verified,
+        source,
+        manifest_path: manifestPath,
+        launch: [manifest.binary, ...manifest.launch.args].join(" "),
+        providers: manifest.providers,
+        model_format: manifest.model_format,
+        mcp: manifest.mcp.kind,
+        telemetry: manifest.telemetry.kind,
+        setup,
+        ...detection,
+        installed: effectiveBinary !== null,
+        path: effectiveBinary,
+      } satisfies AdapterCatalogEntry;
+    }),
+  );
+  return { adapters, issues: registry.issues };
 }

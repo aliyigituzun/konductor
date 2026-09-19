@@ -1,0 +1,16 @@
+.act { display: grid; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); gap: 24px; }
+.uf__filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border-subtle); }
+.uf__filters .k-input, .uf__filters .k-select { width: auto; min-height: 30px; padding: 4px 10px; font-size: 13px; }
+.uf__search { flex: 1 1 180px; min-width: 140px; }
+.uf__day { height: 36px; display: flex; align-items: center; gap: 8px; padding: 0 16px; font-size: 14px; font-weight: 600; color: var(--accent); background: var(--accent-bg); border-bottom: 1px solid var(--border-subtle); }
+.uf__day::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.uf__entry { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border-subtle); font-size: 14px; line-height: 1.5; }
+.uf__entry:last-child { border-bottom: none; }
+.uf__entry .k-dot { margin-top: 7px; background: var(--border-strong); }
+.uf__entry--milestone .k-dot { background: var(--success); }
+.uf__entry--success .k-dot { background: var(--success); }
+.uf__entry--failure .k-dot { background: var(--danger); }
+.uf__entry--milestone .uf__msg { font-weight: 500; }
+.uf__msg { flex: 1; min-width: 0; }
+.uf__msg .k-tag { margin-left: 8px; font-size: 12px; height: 20px; vertical-align: 2px; }
+.uf__when { color: var(--accent); font-weight: 600; font-size: 13px; white-space: nowrap; margin-top: 1px; font-variant-numeric: tabular-nums; }

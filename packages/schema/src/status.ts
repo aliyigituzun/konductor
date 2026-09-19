@@ -62,6 +62,10 @@ export const BlockerSchema = z.object({
   unblock_condition: z.string().optional(),
 });
 
+/**
+ * @deprecated Decisions are SQLite records (see `decision.ts`). This snapshot list is
+ * still accepted from older agents and imported into the decisions table once.
+ */
 export const DecisionNeededSchema = z.object({
   id: z.string(),
   summary: z.string(),
@@ -134,17 +138,39 @@ export const FeatureItemStatusSchema = z.enum([
   "blocked",
 ]);
 
+export const FeaturePhaseSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+});
+
 export const FeatureItemSchema = z.object({
   id: z.string(),
   title: z.string(),
   status: FeatureItemStatusSchema,
   description: z.string().optional(),
+  phase_ids: z.array(z.string()).optional(),
+  todo_id: z.string().optional(),
 });
 
 export const FeatureCategorySchema = z.object({
   id: z.string(),
   title: z.string(),
   items: z.array(FeatureItemSchema),
+});
+
+export const TodoItemSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: FeatureItemStatusSchema,
+  description: z.string().optional(),
+  related_feature_item_ids: z.array(z.string()).default([]),
+  /** Managed assets that provide context or inputs for this piece of work. */
+  related_asset_ids: z.array(z.string()).default([]),
+  feature_item_id: z.string().nullable().optional(),
+  /** When false, this work is owned by an agent and does not create a feature. */
+  creates_feature: z.boolean().default(true),
+  /** Surfaces this to-do ahead of phase-based work. */
+  imminent: z.boolean().default(false),
 });
 
 export const StatusSnapshotSchema = z.object({
@@ -166,12 +192,27 @@ export const StatusSnapshotSchema = z.object({
     current_phase_id: z.string().nullable(),
   }),
   phases: z.array(PhaseSchema),
+  feature_phases: z.array(FeaturePhaseSchema).optional(),
   features: z.array(FeatureCategorySchema).optional(),
+  todos: z.array(TodoItemSchema).optional(),
   issues: IssuesSchema,
   next_actions: z.array(z.string()),
   telemetry: TelemetrySchema.optional(),
   links: LinksSchema.optional(),
   run: RunContextSchema.optional(),
+}).superRefine((snapshot, context) => {
+  const seenTitles = new Set<string>();
+  for (const [index, phase] of (snapshot.feature_phases ?? []).entries()) {
+    const normalizedTitle = phase.title.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+    if (seenTitles.has(normalizedTitle)) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["feature_phases", index, "title"],
+        message: "Feature phase names must be unique.",
+      });
+    }
+    seenTitles.add(normalizedTitle);
+  }
 });
 
 export type PhaseItemType = z.infer<typeof PhaseItemTypeSchema>;
@@ -193,16 +234,25 @@ export type TelemetryActivity = z.infer<typeof TelemetryActivitySchema>;
 export type Telemetry = z.infer<typeof TelemetrySchema>;
 export type Links = z.infer<typeof LinksSchema>;
 export type FeatureItemStatus = z.infer<typeof FeatureItemStatusSchema>;
+export type FeaturePhase = z.infer<typeof FeaturePhaseSchema>;
 export type FeatureItem = z.infer<typeof FeatureItemSchema>;
 export type FeatureCategory = z.infer<typeof FeatureCategorySchema>;
+export type TodoItem = z.infer<typeof TodoItemSchema>;
 export type StatusSnapshot = z.infer<typeof StatusSnapshotSchema>;
 
 export const UpdateKindSchema = z.enum(["brief", "milestone"]);
+// What an update is about and what happened to it. Both are optional so
+// free-form agent notes (write_update) and pre-existing rows stay valid;
+// the dashboard uses them to filter the feed.
+export const UpdateSubjectSchema = z.enum(["feature", "todo", "decision", "agent", "review", "preview"]);
+export const UpdateActionSchema = z.enum(["created", "edited", "deleted", "failure", "success"]);
 
 export const UpdateEntrySchema = z.object({
   id: z.string(),
   at: z.string().datetime(),
   kind: UpdateKindSchema,
+  subject: UpdateSubjectSchema.optional(),
+  action: UpdateActionSchema.optional(),
   message: z.string(),
   agent: z.string(),
   session_id: z.string().nullable().optional(),
@@ -215,4 +265,6 @@ export const UpdateEntrySchema = z.object({
 });
 
 export type UpdateKind = z.infer<typeof UpdateKindSchema>;
+export type UpdateSubject = z.infer<typeof UpdateSubjectSchema>;
+export type UpdateAction = z.infer<typeof UpdateActionSchema>;
 export type UpdateEntry = z.infer<typeof UpdateEntrySchema>;

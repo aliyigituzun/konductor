@@ -1,0 +1,42 @@
+.st { flex: 1; min-height: 0; display: grid; grid-template-columns: 20% minmax(0, 1fr); }
+.st__side {
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  padding: 24px 16px;
+}
+.st__main { min-width: 0; min-height: 0; overflow: auto; padding: 24px 32px 64px; display: grid; gap: 28px; align-content: start; scroll-padding-top: 24px; }
+.st__main .k-section__header { min-height: 48px; font-size: 16px; }
+.st__anchor { scroll-margin-top: 24px; }
+
+.stnav { display: grid; gap: 2px; position: sticky; top: 0; }
+.stnav__title { font-size: 12px; font-weight: 600; color: var(--text-tertiary); padding: 0 12px 8px; letter-spacing: 0.02em; }
+.stnav__item {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border: none;
+  border-left: 2px solid transparent;
+  border-radius: var(--radius);
+  background: none;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+}
+.stnav__item:hover { background: var(--bg-hover); color: var(--text-primary); }
+.stnav__item--active { background: var(--bg-active); color: var(--text-primary); border-left-color: var(--accent); border-radius: 0 var(--radius) var(--radius) 0; }
+.stnav__label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stnav__count--danger { background: var(--danger-bg); color: var(--danger); }
+.stnav__count--warning { background: var(--warning-bg); color: var(--warning); }
+
+@media (max-width: 839px) {
+  .st { grid-template-columns: minmax(0, 1fr); }
+  .st__side { display: none; }
+  .st__main { padding: 16px; }
+}

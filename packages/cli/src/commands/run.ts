@@ -1,6 +1,6 @@
 import { readConfig, listProjectRuns } from "@konductor/store";
 import { fmt, header, sectionHeader } from "../ui/format.js";
-import { formatHostRequestError, hostFetch, parseFlag } from "./host-client.js";
+import { ensureHostRunning, formatHostRequestError, hostFetch, parseFlag } from "./host-client.js";
 
 type RunApiError = {
   error?: string;
@@ -60,6 +60,13 @@ async function start(cwd: string, args: string[]): Promise<void> {
   const prompt = parseFlag(args, "--prompt", "-p");
   if (!prompt) usage();
   const projectId = await currentProjectId(cwd);
+  try {
+    await ensureHostRunning(cwd);
+  } catch (error) {
+    console.error(`${fmt.red("✗")} Could not start Konductor host.`);
+    console.error(`  ${fmt.dim(formatHostRequestError(error))}`);
+    process.exit(1);
+  }
   const profileId = parseFlag(args, "--profile");
   const featureItemId = parseFlag(args, "--feature");
   const packsRaw = parseFlag(args, "--packs");

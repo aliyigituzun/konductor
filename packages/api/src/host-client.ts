@@ -1,5 +1,7 @@
 import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { hostGlobal, readHostState } from "@konductor/store";
 import { ApiError } from "./router.js";
 
@@ -110,11 +112,48 @@ export async function fetchHostHealth(): Promise<HostHealth> {
   }
 }
 
+/** Start the host for a dashboard/API launch when it was stopped while idle. */
+export async function ensureHostRunning(repoPath: string): Promise<void> {
+  const health = await fetchHostHealth();
+  if (health.running) return;
+  // The daemon already owns this API process; proxying from it to itself would
+  // recurse forever. The Vite API process, however, may start the daemon here.
+  if (process.env["KONDUCTOR_HOST_PORT"]) return;
+
+  const configPath = join(repoPath, "konductor.config.json");
+  const config = await readFile(configPath, "utf-8")
+    .then((text) => JSON.parse(text) as { host?: { port?: number } })
+    .catch(() => null);
+  const port = config?.host?.port ?? DEFAULT_HOST_PORT;
+  const host = hostGlobal();
+  await mkdir(host.dir, { recursive: true });
+  const script = join(repoPath, "packages", "host", "src", "server.ts");
+  const proc = spawn("bun", ["run", script], {
+    cwd: repoPath,
+    env: { ...process.env, KONDUCTOR_HOST_PORT: String(port) },
+    stdio: "ignore",
+    detached: true,
+  });
+  if (!proc.pid) {
+    throw new ApiError("Could not start Konductor host.", { status: 503, code: "HOST_START_FAILED" });
+  }
+  await writeFile(host.pidFile, String(proc.pid), "utf-8");
+  proc.unref();
+  const started = Date.now();
+  while (Date.now() - started < 4000) {
+    if ((await fetchHostHealth()).running) return;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  throw new ApiError("Konductor host did not become ready in time.", {
+    status: 503,
+    code: "HOST_START_FAILED",
+  });
+}
+
 /**
  * Forward a request to the host daemon.
  *
- * When the host is down this reports why rather than surfacing a bare fetch
- * failure — the dashboard's most common error by far is "the daemon isn't up".
+ * When the host is down this reports why rather than surfacing a bare fetch failure.
  */
 export async function proxyToHost(pathname: string, init?: RequestInit): Promise<Response> {
   const port = await hostPort();

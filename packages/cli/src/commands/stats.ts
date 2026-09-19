@@ -26,7 +26,6 @@ export async function runStats(_args: string[]): Promise<void> {
     console.log(`  ${fmt.dim("last task:")} ${runs[0].status} via ${runs[0].profile_id}`);
   }
 
-  // Token usage
   console.log(sectionHeader("Token Usage"));
   const signalLabel = (key: string) => {
     const s = snap.signal_availability[key] ?? SIGNAL_STATUS[key];
@@ -52,7 +51,6 @@ export async function runStats(_args: string[]): Promise<void> {
     console.log(`  ${fmt.dim("requests:")}     ${formatNumber(snap.request_count)}`);
   }
 
-  // Context usage
   console.log(sectionHeader("Context Usage"));
   if (snap.context_window === null && snap.peak_context_tokens === null) {
     console.log(`  ${fmt.gray("unavailable")} — context metrics not exposed via OTEL`);
@@ -71,14 +69,12 @@ export async function runStats(_args: string[]): Promise<void> {
     console.log(`  ${fmt.dim("compactions:")}  ${fmt.gray("unavailable")}`);
   }
 
-  // Tool usage
   if (snap.top_tools.length > 0) {
     console.log(sectionHeader("Top Tools"));
     const rows = snap.top_tools.map((t) => [t.name, String(t.count), t.signal_status]);
     console.log(table(rows, ["TOOL", "COUNT", "SIGNAL"]));
   }
 
-  // File activity
   if (snap.top_files.length > 0) {
     console.log(sectionHeader("File Activity"));
     const rows = snap.top_files.map((f) => [

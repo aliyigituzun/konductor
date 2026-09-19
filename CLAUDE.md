@@ -1,33 +1,27 @@
 # CLAUDE.md
 
-## Read Order
+## Documentation
 
-1. [IMPLEMENTATION.md](./IMPLEMENTATION.md)
-2. [STATUS_SCHEMA.md](./STATUS_SCHEMA.md)
-3. [CLI_IMPLEMENTATION.md](./CLI_IMPLEMENTATION.md)
-4. [TDD.md](./TDD.md)
-5. [DESIGN.md](./DESIGN.md)
-6. [USAGE.md](./USAGE.md)
-7. [TELEMETRY_SPIKE.md](./TELEMETRY_SPIKE.md)
-8. [IMPLEMENTATION.md](./IMPLEMENTATION.md) read it again for better retention
+Read [IMPLEMENTATION.md](./IMPLEMENTATION.md) first. It is the single source of
+truth for the product, architecture, implemented capabilities, and next work.
 
-## Routing Rule
+Open another document only when its narrower detail is needed:
 
-`IMPLEMENTATION.md` is the main source of truth for what to do next.
+- [CLI_IMPLEMENTATION.md](./CLI_IMPLEMENTATION.md) for command behavior
+- [DESIGN.md](./DESIGN.md) for dashboard behavior and visual rules
+- [STORAGE.md](./STORAGE.md) for SQLite ownership, migration, and backup details
+- [USAGE.md](./USAGE.md) for the operator workflow
+- [TELEMETRY_SPIKE.md](./TELEMETRY_SPIKE.md) for telemetry validation
 
-Use the other documents as supporting references:
+The schemas in `packages/schema` are authoritative contracts. Do not maintain
+hand-written schema copies in project documentation.
 
-- `STATUS_SCHEMA.md`: project status contract
-- `CLI_IMPLEMENTATION.md`: CLI command behavior and local storage model
-- `TDD.md`: architecture and product boundaries
-- `DESIGN.md`: dashboard visual direction
-- `USAGE.md`: expected operator workflow
-- `TELEMETRY_SPIKE.md`: telemetry validation scope
+## Product Principles
 
-## Stage 1 Constraints
-
-- local-first only
-- no remote backend dependency
-- no `.md` audit in stage 1
-- no multi-repo grouping in stage 1
-- progress comes from phase/item rollups, not telemetry
+- Progress comes from phase/item rollups, not telemetry.
+- Source schemas and documented storage boundaries take precedence over duplicated
+  prose contracts.
+- Keep orchestration state explicit and inspectable across agent adapters.
+- Dashboard copy is for operators. Developer-side explanations (implementation
+  notes, ordering rules, rationale) belong in code comments or docs, never in the
+  frontend.

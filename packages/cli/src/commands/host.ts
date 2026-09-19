@@ -31,9 +31,9 @@ async function start(cwd: string): Promise<void> {
     console.error(`${fmt.red("✗")} ${adapter.manifest.title} binary not found on PATH: ${fmt.bold(binary)}`);
     process.exit(1);
   }
-  if (profile.mode === "pane" && !(await tmuxVersion())) {
-    console.error(`${fmt.red("✗")} tmux is not installed, but the default profile runs in a pane.`);
-    console.error(`  Install tmux, or set the profile mode to ${fmt.bold("headless")}.`);
+  if (!(await tmuxVersion())) {
+    console.error(`${fmt.red("✗")} tmux is not installed. Konductor runs every agent in a tmux window.`);
+    console.error(`  Install it with ${fmt.bold("brew install tmux")}.`);
     process.exit(1);
   }
 

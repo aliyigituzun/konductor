@@ -4,6 +4,7 @@ import { classifyScreen } from "./status.js";
 import { builtinAdapters } from "./adapters/builtin.js";
 
 const claude = builtinAdapters().find((a) => a.id === "claude_code")!;
+const pi = builtinAdapters().find((a) => a.id === "pi")!;
 
 // A real Claude Code permission prompt, as it renders at the bottom of the pane.
 const BLOCKED_SCREEN = `
@@ -108,6 +109,7 @@ describe("classifyScreen", () => {
       id: "broken",
       title: "Broken",
       binary: "broken",
+      providers: [{ id: "acme", title: "Acme" }],
       screen: { blocked: ["(unclosed"], idle: [], done: [] },
     });
     expect(() =>
@@ -117,8 +119,7 @@ describe("classifyScreen", () => {
 });
 
 // A first-run trust prompt looks nothing like a permission prompt, but it blocks the
-// agent just the same — and typing a task into it answers it, which is how a real
-// launch once selected "No, exit".
+// agent just the same, and typing a task into it answers it.
 const TRUST_SCREEN = `
  Accessing workspace:
  /tmp/demo
@@ -205,8 +206,7 @@ describe("working vs idle", () => {
   });
 
   test("a busy marker outranks the idle prompt sharing its footer", () => {
-    // Captured from a real pane mid-turn: both markers are on screen at once, and
-    // matching only the idle one reported a working agent as free.
+    // Captured from a real pane mid-turn: both markers are on screen at once.
     const busyWithPrompt = `
 ✽ Perambulating… (14s · ↓ 527 tokens)
 ────────────────────────────────────────────
@@ -221,5 +221,31 @@ describe("working vs idle", () => {
     });
     expect(result.status).toBe("working");
     expect(result.matched).toBe("esc to interrupt");
+  });
+});
+
+describe("Pi screen detection", () => {
+  const footer = `
+~/work/konductor (main)
+4.2%/200k (auto)                                      (openai) gpt-5
+`.trim();
+
+  test("recognizes Pi's stable context footer as ready for input", () => {
+    const result = classifyScreen(pi, {
+      screen: footer,
+      alive: true,
+      changed: false,
+    });
+    expect(result.status).toBe("idle");
+  });
+
+  test("Pi's working indicator outranks its always-visible footer", () => {
+    const result = classifyScreen(pi, {
+      screen: `Working\n${footer}`,
+      alive: true,
+      changed: false,
+    });
+    expect(result.status).toBe("working");
+    expect(result.matched).toBe("\\bWorking\\b");
   });
 });

@@ -8,12 +8,16 @@ import {
   getProject,
   importantProjectPaths,
   listProjectRuns,
+  listDecisions,
   readConfig,
   readHistory,
   readRegistryWithReachability,
   readStatus,
   readTelemetry,
+  resetTelemetryUsage,
   readUpdates,
+  reconcileInternalProfileTokens,
+  writeProviderSecret,
   removeProject,
   repoLocal,
   writeConfig,
@@ -41,11 +45,7 @@ async function requireProject(id: string): Promise<RegistryEntry> {
   return entry;
 }
 
-/**
- * Resolve a caller-supplied doc filename against a repo root.
- *
- * Checking only for an `.md` suffix let `../../../etc/passwd.md` out of the repo.
- */
+/** Resolve a caller-supplied doc filename against a repo root; null if it escapes. */
 function resolveRepoDoc(repoPath: string, filename: string): string | null {
   if (!filename.endsWith(".md")) return null;
   const root = resolve(repoPath);
@@ -118,7 +118,7 @@ export function registerProjectRoutes(router: Router): void {
 
   router.put("/api/project/:id/agents/workspace", async ({ params, request }) => {
     const entry = await requireProject(params["id"]!);
-    const body = await readJsonBody<{ agents?: NonNullable<KonductorConfig["agents"]> }>(request);
+    const body = await readJsonBody<{ agents?: NonNullable<KonductorConfig["agents"]>; provider_keys?: Record<string, string> }>(request);
     const current = await readConfig(entry.repo_path);
     if (!current) {
       throw new ApiError("Project has no konductor.config.json.", {
@@ -142,6 +142,12 @@ export function registerProjectRoutes(router: Router): void {
 
     const next = KonductorConfigSchema.parse({ ...current, agents });
     await writeConfig(entry.repo_path, next);
+    for (const [providerId, key] of Object.entries(body.provider_keys ?? {})) {
+      if (next.agents?.provider_connections?.some((provider) => provider.id === providerId)) {
+        await writeProviderSecret(next.project_id, providerId, key);
+      }
+    }
+    await reconcileInternalProfileTokens(next.project_id, agents.profiles);
     if (agents.profiles.some((profile) => profile.default_mcp !== false)) {
       await ensureProjectMcpConfig(entry.repo_path);
     }
@@ -153,6 +159,11 @@ export function registerProjectRoutes(router: Router): void {
       active_runs: runs.filter((run) => isActive(run.status)),
       past_runs: runs.filter((run) => !isActive(run.status)),
     });
+  });
+
+  router.post("/api/project/:id/telemetry/reset", async ({ params }) => {
+    const entry = await requireProject(params["id"]!);
+    return json({ telemetry: await resetTelemetryUsage(entry.repo_path) });
   });
 
   router.delete("/api/project/:id", async ({ params }) => {
@@ -178,13 +189,14 @@ export function registerProjectRoutes(router: Router): void {
   router.get("/api/project/:id", async ({ params }) => {
     const entry = await requireProject(params["id"]!);
     const repo = entry.repo_path;
-    const [status, telemetry, history, updates, runs, config] = await Promise.all([
+    const [status, telemetry, history, updates, runs, config, decisions] = await Promise.all([
       readStatus(repo),
       readTelemetry(repo),
       readHistory(repoLocal(repo).historyDir),
       readUpdates(repo),
       listProjectRuns(repo),
       readConfig(repo),
+      listDecisions(repo),
     ]);
     return json({
       entry,
@@ -194,6 +206,7 @@ export function registerProjectRoutes(router: Router): void {
       updates,
       runs,
       config,
+      decisions,
       important_paths: importantProjectPaths(repo),
     });
   });

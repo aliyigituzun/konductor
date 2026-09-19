@@ -1,0 +1,8 @@
+.pb__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+.pb__phase { display: grid; gap: 0; align-content: start; }
+.pb__phase-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--border-subtle); }
+.pb__phase-title { font-size: 14px; font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pb__item { min-height: 36px; padding: 6px 14px; display: flex; align-items: center; gap: 8px; font-size: 14px; border-bottom: 1px solid var(--border-subtle); }
+.pb__item:last-child { border-bottom: none; }
+.pb__item-title { flex: 1; min-width: 0; }
+.pb__more { padding: 8px 14px; }

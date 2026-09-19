@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { runInit } from "./commands/init.js";
+import { runSetup } from "./commands/setup.js";
 import { runProjects } from "./commands/projects.js";
 import { runStatus } from "./commands/status.js";
 import { runIssues } from "./commands/issues.js";
@@ -14,6 +15,9 @@ import { runHost } from "./commands/host.js";
 import { runRun } from "./commands/run.js";
 import { runAgent } from "./commands/agent.js";
 import { runAdapters } from "./commands/adapters.js";
+import { runTokens } from "./commands/tokens.js";
+import { runPorts } from "./commands/ports.js";
+import { runPreview } from "./commands/preview.js";
 import { fmt } from "./ui/format.js";
 
 const args = process.argv.slice(2);
@@ -26,6 +30,7 @@ ${fmt.bold("Usage:")}
   konductor <command> [options]
 
 ${fmt.bold("Commands:")}
+  setup             One-time machine bootstrap (generates the /root key)
   init              Initialize this repo for Konductor
   delete            Remove a project from Konductor
   projects          List all registered projects (flags moved/missing ones)
@@ -46,6 +51,19 @@ ${fmt.bold("Commands:")}
   agent attach      Attach your terminal to an agent's pane
   adapters list     Show supported agents and whether they are installed
   adapters show     Show one adapter's invocation details
+  adapters setup    Prepare isolated MCP config for an agent harness
+  tokens list       List internal and external access identities
+  tokens create     Create a project-scoped external MCP token
+  tokens revoke     Revoke an access token
+  tokens sync       Reconcile one internal token per agent profile
+  tokens audit      Inspect token and MCP authorization events
+  preview start     Run a branch's dev server for customer review
+  preview list      Show preview instances for this project
+  preview stop      Stop a preview instance
+  ports list        Show the preview port range and reserved ports
+  ports reserve     Mark a port or range as taken on this machine
+  ports release     Remove a port reservation
+  ports range       Set the pool previews draw from
   run list          List recorded runs for this project
   run show          Show one run summary
   run logs          Show stored terminal output for a run
@@ -66,11 +84,13 @@ ${fmt.bold("Options:")}
   --stop         (dashboard) Stop a background dashboard process
   --task, -t     (agent start) One-line task text
   --task-file    (agent start) File holding a longer brief
-  --adapter      (agent start) Agent to use, e.g. claude_code, codex, opencode
+  --profile      (agent start) Agent profile to launch (harness + provider + model)
+  --model        (agent start) Override the profile's model for this run
+  --provider     (agent start) Override the profile's provider (multi-provider harnesses only)
   --slug         (agent start) Name to address this agent by
   --worktree     (agent start) Give the agent its own git worktree
-  --headless     (agent start) Run once over pipes instead of in a pane
   --scrollback   (agent read) Read history instead of the visible screen
+  --token-file   (mcp serve) Read an external access token from a protected file
   --help         Show this help message
 
 ${fmt.bold("Examples:")}
@@ -80,7 +100,7 @@ ${fmt.bold("Examples:")}
   konductor agent list
   konductor agent send login "also update the docs"
   konductor agent attach login
-  konductor mcp serve
+  KONDUCTOR_ACCESS_TOKEN_FILE=/private/token konductor mcp serve
   konductor status
   konductor doctor
 `;
@@ -92,6 +112,9 @@ async function main() {
   }
 
   switch (command) {
+    case "setup":
+      await runSetup();
+      break;
     case "init":
       await runInit(rest);
       break;
@@ -126,6 +149,17 @@ async function main() {
       break;
     case "adapters":
       await runAdapters(rest);
+      break;
+    case "token":
+    case "tokens":
+      await runTokens(rest);
+      break;
+    case "preview":
+    case "previews":
+      await runPreview(rest);
+      break;
+    case "ports":
+      await runPorts(rest);
       break;
     case "dashboard":
       await runDashboard(rest);

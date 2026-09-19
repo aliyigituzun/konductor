@@ -32,10 +32,10 @@ export async function runSync(_args: string[]): Promise<void> {
   const paths = repoLocal(cwd);
   const now = new Date().toISOString();
 
-  // Read telemetry from latest.json — the background receiver keeps this current.
+  // Read telemetry from SQLite — the background receiver keeps this current.
   // If no receiver has run yet, telemetry will simply be absent.
   const telSnap = await readTelemetry(cwd);
-  const telemetryPath = telSnap ? paths.latestTelemetry : null;
+  const telemetryPath = telSnap ? paths.database : null;
   if (telSnap) {
     console.log(`${fmt.green("✓")} Telemetry snapshot found (${telSnap.captured_at})`);
   } else {
@@ -44,7 +44,6 @@ export async function runSync(_args: string[]): Promise<void> {
     );
   }
 
-  // Write history entry
   const historyEntry = {
     schema_version: "0.2.0" as const,
     synced_at: now,
@@ -56,7 +55,6 @@ export async function runSync(_args: string[]): Promise<void> {
   await appendHistory(paths.historyDir, historyEntry);
   console.log(`${fmt.green("✓")} History entry written`);
 
-  // Update registry last_sync
   const existing = await getProject(projectId);
   if (existing) {
     const runs = await listProjectRuns(cwd);

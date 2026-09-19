@@ -2,10 +2,12 @@ import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { readFile, writeFile, unlink } from "node:fs/promises";
 import { fmt, header } from "../ui/format.js";
-import { globalRegistry } from "@konductor/store";
+import { GLOBAL_DIR, globalRegistry } from "@konductor/store";
+import { ensureHostRunning } from "./host-client.js";
+import { withOpenFileLimit } from "./process-limits.js";
 
 const WEB_DIR = join(import.meta.dir, "../../../../apps/web");
-const PID_FILE = join(process.env["HOME"] ?? "~", ".konductor", "dashboard.pid");
+const PID_FILE = join(GLOBAL_DIR, "dashboard.pid");
 
 async function readPid(): Promise<number | null> {
   try {
@@ -45,6 +47,14 @@ export async function runDashboard(args: string[]): Promise<void> {
 
   console.log(header("konductor dashboard"));
 
+  try {
+    await ensureHostRunning(process.cwd());
+  } catch (error) {
+    console.error(`${fmt.red("✗")} Could not start Konductor host.`);
+    console.error(`  ${fmt.dim(error instanceof Error ? error.message : String(error))}`);
+    process.exit(1);
+  }
+
   if (!existsSync(WEB_DIR)) {
     console.error(
       `${fmt.red("✗")} Dashboard app not found at ${WEB_DIR}.\n` +
@@ -68,7 +78,7 @@ export async function runDashboard(args: string[]): Promise<void> {
 
   if (background) {
     // Detach the Vite process so it outlives this CLI invocation
-    const proc = Bun.spawn(["bun", "run", "dev"], {
+    const proc = Bun.spawn(withOpenFileLimit(["bun", "run", "dev"]), {
       cwd: WEB_DIR,
       env: spawnEnv,
       stdout: Bun.file(join(process.env["HOME"] ?? "~", ".konductor", "dashboard.log")),
@@ -88,7 +98,7 @@ export async function runDashboard(args: string[]): Promise<void> {
     Bun.spawn(["open", url], { stdout: "ignore", stderr: "ignore" });
   } else {
     console.log(`${fmt.dim("starting Vite dev server...")}\n`);
-    const proc = Bun.spawn(["bun", "run", "dev"], {
+    const proc = Bun.spawn(withOpenFileLimit(["bun", "run", "dev"]), {
       cwd: WEB_DIR,
       env: spawnEnv,
       stdout: "inherit",

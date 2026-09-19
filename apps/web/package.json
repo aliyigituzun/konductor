@@ -7,9 +7,11 @@
     "dev": "bun --bun vite",
     "build": "tsc && bun --bun vite build",
     "preview": "bun --bun vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
   },
   "dependencies": {
+    "@google/model-viewer": "^4.3.1",
     "@konductor/api": "workspace:*",
     "@konductor/schema": "workspace:*",
     "@konductor/store": "workspace:*",
@@ -17,9 +19,11 @@
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "react-router-dom": "^6.23.1",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "three": "^0.186.0"
   },
   "devDependencies": {
+    "@types/bun": "^1.4.2",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",

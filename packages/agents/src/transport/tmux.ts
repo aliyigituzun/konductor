@@ -1,6 +1,7 @@
 import type { AgentAdapterManifest, AgentHandle } from "@konductor/schema";
 import { classifyScreen, type Classification } from "../status.js";
 import {
+  attachCommand,
   capturePane,
   killPane,
   findPane,
@@ -10,7 +11,24 @@ import {
   spawnPane,
   tmuxVersion,
 } from "../tmux.js";
-import type { AgentTransport, ReadOptions, StartSpec, TransportEvents } from "./types.js";
+
+export type StartSpec = {
+  slug: string;
+  run_id: string;
+  manifest: AgentAdapterManifest;
+  /** Full argv, binary first. */
+  command: string[];
+  cwd: string;
+  env: Record<string, string>;
+  /** tmux session to open the agent's window in. */
+  session: string;
+};
+
+export type ReadOptions = {
+  source?: "visible" | "scrollback";
+  lines?: number;
+  ansi?: boolean;
+};
 
 /** Named tmux keys for the submit sequences an adapter can ask for. */
 const SUBMIT_KEYS: Record<string, string> = {
@@ -20,22 +38,19 @@ const SUBMIT_KEYS: Record<string, string> = {
 
 export class TmuxUnavailableError extends Error {
   constructor() {
-    super(
-      "tmux is not installed, but this agent profile runs in a pane. " +
-        "Install tmux (`brew install tmux`), or set the profile's mode to \"headless\".",
-    );
+    super("tmux is not installed. Konductor runs every agent in a tmux pane; install it with `brew install tmux`.");
     this.name = "TmuxUnavailableError";
   }
 }
 
 /**
- * Runs each agent in a tmux pane.
+ * Drives every agent Konductor runs, each in its own tmux window.
  *
- * The pane outlives the host daemon, so a host restart loses no agents — the pane id
- * persisted on the run summary is enough to reattach. It also means the operator can
- * `tmux attach` and drive the agent by hand at any point.
+ * The window outlives the host daemon, so a host restart loses no agents — the ids
+ * persisted on the run summary are enough to pick them back up. It also means the
+ * operator can `tmux attach` and drive the agent by hand at any point.
  */
-export class TmuxTransport implements AgentTransport {
+export class TmuxTransport {
   readonly kind = "tmux" as const;
 
   /** Last screen sample per pane, so status can tell "changed" from "quiet". */
@@ -45,10 +60,10 @@ export class TmuxTransport implements AgentTransport {
     return (await tmuxVersion()) !== null;
   }
 
-  async start(spec: StartSpec, events: TransportEvents = {}): Promise<AgentHandle> {
+  async start(spec: StartSpec): Promise<AgentHandle> {
     if (!(await TmuxTransport.available())) throw new TmuxUnavailableError();
 
-    const paneId = await spawnPane({
+    const spawned = await spawnPane({
       session: spec.session,
       cwd: spec.cwd,
       name: spec.slug,
@@ -56,20 +71,17 @@ export class TmuxTransport implements AgentTransport {
       command: spec.command,
     });
 
-    events.onChunk?.(`[konductor] pane ${paneId} opened in tmux session "${spec.session}".\n`);
-
     return {
       slug: spec.slug,
       run_id: spec.run_id,
-      transport: "tmux",
       session_name: spec.session,
-      pane_id: paneId,
-      pid: null,
+      window_id: spawned.window_id,
+      pane_id: spawned.pane_id,
     };
   }
 
+  /** Type text into the agent without submitting it. */
   async send(handle: AgentHandle, text: string): Promise<void> {
-    const paneId = requirePane(handle);
     // A newline inside `send-keys -l` submits early, cutting the message in half.
     // Multi-line content belongs in a file the agent is told to read.
     if (text.includes("\n")) {
@@ -78,26 +90,30 @@ export class TmuxTransport implements AgentTransport {
           "input box early. Write the content to a file and send a one-line pointer to it.",
       );
     }
-    await sendLiteral(paneId, text);
+    await sendLiteral(handle.pane_id, text);
   }
 
+  /** Submit whatever is in the agent's input box. */
   async submit(handle: AgentHandle, manifest: AgentAdapterManifest): Promise<void> {
-    const paneId = requirePane(handle);
     const named = SUBMIT_KEYS[manifest.submit_key];
     if (named) {
-      await sendKeys(paneId, [named]);
+      await sendKeys(handle.pane_id, [named]);
       return;
     }
-    await sendLiteral(paneId, manifest.submit_key);
+    await sendLiteral(handle.pane_id, manifest.submit_key);
+  }
+
+  /** Explicit operator response to a visible dialog; never used for auto-approval. */
+  async cancelDialog(handle: AgentHandle): Promise<void> {
+    await sendKeys(handle.pane_id, ["Escape"]);
   }
 
   async read(handle: AgentHandle, options: ReadOptions = {}): Promise<string> {
-    const paneId = requirePane(handle);
-    return capturePane(paneId, options);
+    return capturePane(handle.pane_id, options);
   }
 
   async status(handle: AgentHandle, manifest: AgentAdapterManifest): Promise<Classification> {
-    const paneId = requirePane(handle);
+    const paneId = handle.pane_id;
 
     if (!(await paneExists(paneId))) {
       this.lastScreen.delete(paneId);
@@ -109,7 +125,7 @@ export class TmuxTransport implements AgentTransport {
       };
     }
 
-    const pane = handle.session_name ? await findPane(handle.session_name, paneId) : null;
+    const pane = await findPane(handle.session_name, paneId);
     const screen = await capturePane(paneId);
     const previous = this.lastScreen.get(paneId);
     this.lastScreen.set(paneId, screen);
@@ -125,23 +141,19 @@ export class TmuxTransport implements AgentTransport {
   }
 
   async stop(handle: AgentHandle): Promise<void> {
-    const paneId = handle.pane_id;
-    if (!paneId) return;
-    await killPane(paneId);
-    this.lastScreen.delete(paneId);
+    await killPane(handle.pane_id);
+    this.lastScreen.delete(handle.pane_id);
   }
 
+  /** Whether the pane is still there and its process has not exited. */
   async alive(handle: AgentHandle): Promise<boolean> {
-    if (!handle.pane_id) return false;
     if (!(await paneExists(handle.pane_id))) return false;
-    const pane = handle.session_name ? await findPane(handle.session_name, handle.pane_id) : null;
+    const pane = await findPane(handle.session_name, handle.pane_id);
     return !(pane?.dead ?? false);
   }
-}
 
-function requirePane(handle: AgentHandle): string {
-  if (!handle.pane_id) {
-    throw new Error(`Agent "${handle.slug}" has no tmux pane recorded.`);
+  /** The paste-ready command that puts an operator in front of this agent. */
+  attachCommand(handle: AgentHandle): string {
+    return attachCommand(handle.session_name, handle.window_id);
   }
-  return handle.pane_id;
 }

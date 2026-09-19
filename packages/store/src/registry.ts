@@ -1,6 +1,7 @@
-import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { GLOBAL_DIR, GLOBAL_REGISTRY } from "./paths.js";
+import { GLOBAL_DATABASE, GLOBAL_REGISTRY } from "./paths.js";
+import { withDatabase, importOnce, legacyJson } from "./database.js";
+import type { Database } from "bun:sqlite";
 import {
   RegistrySchema,
   type Registry,
@@ -20,64 +21,53 @@ function normalizeRegistry(raw: unknown): Registry {
   });
 }
 
-async function ensureGlobalDir(): Promise<void> {
-  if (!existsSync(GLOBAL_DIR)) {
-    await mkdir(GLOBAL_DIR, { recursive: true });
-  }
+function withRegistry<T>(work: (db: Database) => T): T {
+  return withDatabase(GLOBAL_DATABASE, (db) => {
+    importOnce(db, GLOBAL_REGISTRY, () => {
+      const raw = legacyJson(GLOBAL_REGISTRY);
+      if (raw === undefined) return;
+      for (const project of normalizeRegistry(raw).projects) {
+        db.query("INSERT OR IGNORE INTO projects VALUES (?, ?)").run(project.id, JSON.stringify(project));
+      }
+    });
+    return work(db);
+  });
 }
 
 export async function readRegistry(): Promise<Registry> {
-  await ensureGlobalDir();
-  if (!existsSync(GLOBAL_REGISTRY)) {
-    return { schema_version: "0.2.0", projects: [] };
-  }
-  const raw = await readFile(GLOBAL_REGISTRY, "utf-8");
-  return normalizeRegistry(JSON.parse(raw));
+  return withRegistry((db) => normalizeRegistry({
+    projects: db.query<{ body: string }, []>("SELECT body FROM projects ORDER BY rowid").all()
+      .map((row) => JSON.parse(row.body)),
+  }));
 }
 
 export async function writeRegistry(registry: Registry): Promise<void> {
-  await ensureGlobalDir();
-  await writeFile(
-    GLOBAL_REGISTRY,
-    JSON.stringify(
-      RegistrySchema.parse({
-        ...registry,
-        schema_version: "0.2.0",
-      }),
-      null,
-      2,
-    ),
-    "utf-8",
-  );
+  const parsed = RegistrySchema.parse({ ...registry, schema_version: "0.2.0" });
+  withRegistry((db) => db.transaction(() => {
+    db.exec("DELETE FROM projects");
+    for (const project of parsed.projects) {
+      db.query("INSERT INTO projects VALUES (?, ?)").run(project.id, JSON.stringify(project));
+    }
+  }).immediate());
 }
 
 export async function upsertProject(entry: RegistryEntry): Promise<void> {
-  const registry = await readRegistry();
-  const idx = registry.projects.findIndex((p) => p.id === entry.id);
-  if (idx >= 0) {
-    registry.projects[idx] = entry;
-  } else {
-    registry.projects.push(entry);
-  }
-  await writeRegistry(registry);
+  const parsed = RegistrySchema.parse({ schema_version: "0.2.0", projects: [entry] }).projects[0]!;
+  withRegistry((db) => db.query("INSERT INTO projects VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET body = excluded.body")
+    .run(parsed.id, JSON.stringify(parsed)));
 }
 
 export async function removeProject(id: string): Promise<void> {
-  const registry = await readRegistry();
-  registry.projects = registry.projects.filter((p) => p.id !== id);
-  await writeRegistry(registry);
+  withRegistry((db) => db.query("DELETE FROM projects WHERE id = ?").run(id));
 }
 
 export async function getProject(id: string): Promise<RegistryEntry | undefined> {
-  const registry = await readRegistry();
-  return registry.projects.find((p) => p.id === id);
+  return withRegistry((db) => {
+    const row = db.query<{ body: string }, [string]>("SELECT body FROM projects WHERE id = ?").get(id);
+    return row ? normalizeRegistry({ projects: [JSON.parse(row.body)] }).projects[0] : undefined;
+  });
 }
 
-/**
- * A registered project is "reachable" when its repo_path still exists on disk.
- * If the directory was moved or removed, the registry entry is stale and the
- * project can no longer be found at the path Konductor recorded for it.
- */
 export function isProjectReachable(entry: Pick<RegistryEntry, "repo_path">): boolean {
   return existsSync(entry.repo_path);
 }

@@ -1,20 +1,30 @@
-import React, { useState } from "react";
-import type { UpdateEntry } from "../lib/types.js";
+import React, { useMemo, useState } from "react";
+import type { UpdateAction, UpdateEntry, UpdateSubject } from "../lib/types.js";
+import { relativeTime } from "../styles/ui.js";
+import "./UpdatesFeed.css";
 
 interface Props {
   updates: UpdateEntry[];
 }
 
-function relativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60_000);
-  if (mins < 1) return "just now";
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.floor(hrs / 24);
-  return `${days}d ago`;
-}
+const RECENT = 20;
+
+const SUBJECTS: { value: UpdateSubject; label: string }[] = [
+  { value: "feature", label: "Feature" },
+  { value: "todo", label: "To-do" },
+  { value: "decision", label: "Decision" },
+  { value: "agent", label: "Agent / task" },
+  { value: "review", label: "Review" },
+  { value: "preview", label: "Preview" },
+];
+
+const ACTIONS: { value: UpdateAction; label: string }[] = [
+  { value: "created", label: "Created" },
+  { value: "edited", label: "Edited" },
+  { value: "deleted", label: "Deleted" },
+  { value: "success", label: "Success" },
+  { value: "failure", label: "Failure" },
+];
 
 function dayLabel(iso: string): string {
   const d = new Date(iso);
@@ -26,184 +36,133 @@ function dayLabel(iso: string): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-const s: Record<string, React.CSSProperties> = {
-  root: { marginBottom: 24 },
-  header: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 10,
-  },
-  title: {
-    fontSize: 12,
-    fontWeight: 600,
-    textTransform: "uppercase" as const,
-    letterSpacing: "0.06em",
-    color: "var(--text-tertiary)",
-  },
-  toggle: {
-    fontSize: 12,
-    color: "var(--text-tertiary)",
-    cursor: "pointer",
-    background: "none",
-    border: "none",
-    padding: 0,
-    textDecoration: "underline",
-  },
-  feed: {
-    background: "var(--bg-canvas)",
-    border: "1px solid var(--border-subtle)",
-    borderRadius: "var(--radius-md)",
-    boxShadow: "var(--shadow-soft)",
-    overflow: "hidden",
-  },
-  dayGroup: { borderBottom: "1px solid var(--border-subtle)" },
-  dayLabel: {
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: "uppercase" as const,
-    letterSpacing: "0.05em",
-    color: "var(--text-tertiary)",
-    padding: "7px 14px",
-    background: "var(--bg-panel)",
-  },
-  entry: {
-    display: "flex",
-    gap: 10,
-    padding: "9px 14px",
-    borderBottom: "1px solid var(--border-subtle)",
-    alignItems: "flex-start",
-  },
-  entryLast: {
-    display: "flex",
-    gap: 10,
-    padding: "9px 14px",
-    alignItems: "flex-start",
-  },
-  dot: {
-    width: 7,
-    height: 7,
-    borderRadius: "50%",
-    marginTop: 5,
-    flexShrink: 0,
-  },
-  message: { fontSize: 13, color: "var(--text-primary)", lineHeight: 1.5, flex: 1 },
-  milestoneMessage: {
-    fontSize: 13,
-    color: "var(--text-primary)",
-    lineHeight: 1.5,
-    flex: 1,
-    fontWeight: 500,
-  },
-  meta: {
-    fontSize: 11,
-    color: "var(--text-tertiary)",
-    whiteSpace: "nowrap" as const,
-    marginTop: 1,
-  },
-  phaseTag: {
-    display: "inline-block",
-    fontSize: 10,
-    fontWeight: 600,
-    padding: "1px 5px",
-    borderRadius: 3,
-    background: "var(--bg-panel-alt)",
-    color: "var(--text-tertiary)",
-    marginLeft: 6,
-    verticalAlign: "middle",
-  },
-  runTag: {
-    display: "inline-block",
-    fontSize: 10,
-    fontWeight: 600,
-    padding: "1px 5px",
-    borderRadius: 3,
-    background: "rgba(2, 132, 199, 0.12)",
-    color: "#0284c7",
-    marginLeft: 6,
-    verticalAlign: "middle",
-  },
-  empty: { fontSize: 13, color: "var(--text-tertiary)", padding: "14px", textAlign: "center" as const },
-};
+// Local calendar day of the entry as YYYY-MM-DD, comparable to <input type="date"> values.
+function localDay(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
 
 export function UpdatesFeed({ updates }: Props) {
   const [showAll, setShowAll] = useState(false);
+  const [query, setQuery] = useState("");
+  const [subject, setSubject] = useState<UpdateSubject | "">("");
+  const [action, setAction] = useState<UpdateAction | "">("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
 
-  if (updates.length === 0) {
-    return (
-      <div style={s.root}>
-        <div style={s.header}>
-          <div style={s.title}>Updates</div>
-        </div>
-        <div style={s.feed}>
-          <div style={s.empty}>No updates yet — the agent will write updates here after each action.</div>
-        </div>
-      </div>
-    );
-  }
+  const filtering = Boolean(query.trim() || subject || action || from || to);
 
-  const sorted = [...updates].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
-  const visible = showAll ? sorted : sorted.slice(0, 20);
+  const filtered = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return updates.filter((entry) => {
+      if (subject && entry.subject !== subject) return false;
+      if (action && entry.action !== action) return false;
+      if (from || to) {
+        const day = localDay(entry.at);
+        if (from && day < from) return false;
+        if (to && day > to) return false;
+      }
+      if (needle) {
+        const haystack = [entry.message, entry.agent, entry.phase_id, entry.run_id, entry.feature_item_id]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        if (!haystack.includes(needle)) return false;
+      }
+      return true;
+    });
+  }, [updates, query, subject, action, from, to]);
 
-  // Group by day
+  const sorted = [...filtered].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+  const visible = showAll ? sorted : sorted.slice(0, RECENT);
+
   const groups: { label: string; entries: UpdateEntry[] }[] = [];
   for (const entry of visible) {
     const label = dayLabel(entry.at);
     const last = groups[groups.length - 1];
-    if (last && last.label === label) {
-      last.entries.push(entry);
-    } else {
-      groups.push({ label, entries: [entry] });
-    }
+    if (last && last.label === label) last.entries.push(entry);
+    else groups.push({ label, entries: [entry] });
   }
 
+  const clear = () => {
+    setQuery("");
+    setSubject("");
+    setAction("");
+    setFrom("");
+    setTo("");
+  };
+
   return (
-    <div style={s.root}>
-      <div style={s.header}>
-        <div style={s.title}>Updates</div>
-        {updates.length > 20 && (
-          <button style={s.toggle} onClick={() => setShowAll((v) => !v)}>
-            {showAll ? "Show recent" : `Show all ${updates.length}`}
+    <details className="k-section" open>
+      <summary className="k-section__header k-section__summary">
+        <span className="k-chevron" aria-hidden="true">›</span>
+        Updates
+        <span className="k-section__count">{filtering ? `${filtered.length} / ${updates.length}` : updates.length}</span>
+        <span className="k-spacer" />
+        {sorted.length > RECENT && (
+          <button type="button" className="k-btn k-btn--ghost k-btn--sm" onClick={(event) => { event.preventDefault(); setShowAll((v) => !v); }}>
+            {showAll ? "Recent" : "All"}
           </button>
         )}
-      </div>
-      <div style={s.feed}>
-        {groups.map((group, gi) => (
-          <div key={group.label} style={gi < groups.length - 1 ? s.dayGroup : undefined}>
-            <div style={s.dayLabel}>{group.label}</div>
-            {group.entries.map((entry, ei) => {
-              const isMilestone = entry.kind === "milestone";
-              const isLast = ei === group.entries.length - 1 && gi === groups.length - 1;
+      </summary>
+      {updates.length > 0 && (
+        <div className="uf__filters">
+          <input
+            className="k-input uf__search"
+            type="search"
+            placeholder="Search updates"
+            aria-label="Search updates"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <select className="k-select" aria-label="Type" value={subject} onChange={(event) => setSubject(event.target.value as UpdateSubject | "")}>
+            <option value="">Any type</option>
+            {SUBJECTS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <select className="k-select" aria-label="Action" value={action} onChange={(event) => setAction(event.target.value as UpdateAction | "")}>
+            <option value="">Any action</option>
+            {ACTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select>
+          <input className="k-input" type="date" aria-label="From date" value={from} max={to || undefined} onChange={(event) => setFrom(event.target.value)} />
+          <input className="k-input" type="date" aria-label="To date" value={to} min={from || undefined} onChange={(event) => setTo(event.target.value)} />
+          {filtering && (
+            <button type="button" className="k-btn k-btn--ghost k-btn--sm" onClick={clear}>Clear</button>
+          )}
+        </div>
+      )}
+      {updates.length === 0 ? (
+        <p className="k-empty" style={{ padding: 10 }}>No updates</p>
+      ) : filtered.length === 0 ? (
+        <p className="k-empty" style={{ padding: 10 }}>No matching updates</p>
+      ) : (
+        groups.map((group) => (
+          <div key={group.label}>
+            <div className="uf__day">{group.label}</div>
+            {group.entries.map((entry) => {
+              const entrySubject = entry.subject;
+              const entryAction = entry.action;
               return (
-                <div key={entry.id} style={isLast ? s.entryLast : s.entry}>
-                  <div
-                    style={{
-                      ...s.dot,
-                      background: isMilestone ? "#1f7a4d" : "var(--border-strong)",
-                    }}
-                  />
-                  <div style={{ flex: 1 }}>
-                    <span style={isMilestone ? s.milestoneMessage : s.message}>
-                      {entry.message}
-                    </span>
-                    {entry.phase_id && (
-                      <span style={s.phaseTag}>{entry.phase_id}</span>
-                    )}
-                    {entry.run_id && (
-                      <span style={s.runTag}>
-                        {entry.source ?? "run"} · {entry.run_id.slice(0, 8)}
+                <div key={entry.id} className={`uf__entry${entry.kind === "milestone" ? " uf__entry--milestone" : ""}${entryAction ? ` uf__entry--${entryAction}` : ""}`}>
+                  <span className="k-dot" />
+                  <div className="uf__msg">
+                    {entry.message}
+                    {entrySubject && (
+                      <span className="k-tag">
+                        {SUBJECTS.find((option) => option.value === entrySubject)?.label ?? entrySubject}
+                        {entryAction ? ` · ${entryAction}` : ""}
                       </span>
                     )}
+                    {entry.phase_id && <span className="k-tag">{entry.phase_id}</span>}
+                    {entry.run_id && <span className="k-tag k-tag--accent">{entry.source ?? "run"} {entry.run_id.slice(0, 8)}</span>}
                   </div>
-                  <div style={s.meta} title={entry.at}>
-                    {relativeTime(entry.at)}
-                  </div>
+                  <span className="uf__when" title={entry.at}>{relativeTime(entry.at)}</span>
                 </div>
               );
             })}
           </div>
-        ))}
-      </div>
-    </div>
+        ))
+      )}
+    </details>
   );
 }

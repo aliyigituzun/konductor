@@ -6,13 +6,28 @@
  * Request/Response), so the dashboard's backend exists exactly once.
  */
 
+import type { AuthPrincipal } from "@konductor/schema";
+
 export type RouteParams = Record<string, string>;
 
 export type RouteContext = {
   request: Request;
   url: URL;
   params: RouteParams;
+  /** The signed-in operator, or null when authentication is not required. */
+  principal: AuthPrincipal | null;
 };
+
+/**
+ * Runs before every matched route. It either returns the request's principal (null
+ * when the route is open) or a Response that short-circuits the handler, which is
+ * how a missing session or permission is refused.
+ */
+export type RouteGuard = (input: {
+  request: Request;
+  url: URL;
+  params: RouteParams;
+}) => Promise<AuthPrincipal | null | Response>;
 
 export type RouteHandler = (ctx: RouteContext) => Promise<Response> | Response;
 
@@ -48,12 +63,7 @@ export function json(data: unknown, status = 200): Response {
   });
 }
 
-/**
- * One error shape for the whole product.
- *
- * The host, the dev server, and the dashboard client each used to invent their
- * own, so the same failure read differently depending on which one answered.
- */
+/** One error shape for the whole product. */
 export function errorResponse(error: unknown): Response {
   if (error instanceof ApiError) {
     return json(
@@ -90,6 +100,13 @@ function matchRoute(route: Route, method: string, pathname: string): RouteParams
 
 export class Router {
   private readonly routes: Route[] = [];
+  private guard: RouteGuard | null = null;
+
+  /** Install the authorization guard. Without one every route runs unauthenticated. */
+  protect(guard: RouteGuard): this {
+    this.guard = guard;
+    return this;
+  }
 
   add(method: string, pattern: string, handler: RouteHandler): this {
     this.routes.push({ method, segments: parsePattern(pattern), handler });
@@ -105,6 +122,9 @@ export class Router {
   put(pattern: string, handler: RouteHandler): this {
     return this.add("PUT", pattern, handler);
   }
+  patch(pattern: string, handler: RouteHandler): this {
+    return this.add("PATCH", pattern, handler);
+  }
   delete(pattern: string, handler: RouteHandler): this {
     return this.add("DELETE", pattern, handler);
   }
@@ -116,7 +136,9 @@ export class Router {
       const params = matchRoute(route, request.method, url.pathname);
       if (!params) continue;
       try {
-        return await route.handler({ request, url, params });
+        const outcome = this.guard ? await this.guard({ request, url, params }) : null;
+        if (outcome instanceof Response) return outcome;
+        return await route.handler({ request, url, params, principal: outcome });
       } catch (error) {
         return errorResponse(error);
       }

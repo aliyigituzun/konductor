@@ -1,6 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { AgentAdapterManifestSchema, AgentProfileSchema } from "@konductor/schema";
-import { AdapterInvocationError, buildArgv, buildResumeArgv, resolveArgs } from "./invoke.js";
+import {
+  buildHarnessEnv,
+  AdapterInvocationError,
+  buildArgv,
+  buildResumeArgv,
+  resolveArgs,
+  resolveModel,
+} from "./invoke.js";
 import { builtinAdapters } from "./adapters/builtin.js";
 
 const manifest = (overrides: Record<string, unknown> = {}) =>
@@ -8,27 +15,73 @@ const manifest = (overrides: Record<string, unknown> = {}) =>
     id: "demo",
     title: "Demo",
     binary: "demo",
-    interactive: { args: ["--model", "{{model}}"] },
-    headless: { args: ["exec", "--model", "{{model}}", "{{prompt}}"] },
+    launch: { args: ["--model", "{{model}}"] },
     resume: { args: ["resume", "{{session_id}}"] },
+    providers: [{ id: "acme", title: "Acme", models: [{ id: "acme-1" }] }],
     ...overrides,
   });
+
+const multiProvider = () =>
+  manifest({
+    providers: [
+      { id: "anthropic", title: "Anthropic", models: [{ id: "claude-opus-5" }] },
+      { id: "openai", title: "OpenAI", models: [] },
+    ],
+    model_format: "provider/id",
+  });
+
+describe("buildHarnessEnv", () => {
+  test("removes parent Claude session markers and undefined values", () => {
+    expect(buildHarnessEnv(
+      { id: "claude_code" },
+      {
+        PATH: "/usr/bin",
+        CLAUDECODE: "1",
+        CLAUDE_CODE_SESSION_ID: "parent-session",
+        CLAUDE_CODE_MESSAGING_TOKEN: "secret",
+        CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+      },
+      {
+        KONDUCTOR_RUN_ID: "run-1",
+        KONDUCTOR_FEATURE_ITEM_ID: undefined,
+        CLAUDE_CONFIG_DIR: "/tmp/konductor/claude",
+      },
+    )).toEqual({
+      PATH: "/usr/bin",
+      CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+      KONDUCTOR_RUN_ID: "run-1",
+      CLAUDE_CONFIG_DIR: "/tmp/konductor/claude",
+    });
+  });
+
+  test("preserves unrelated environment for other harnesses", () => {
+    expect(buildHarnessEnv(
+      { id: "codex" },
+      { PATH: "/usr/bin", CLAUDECODE: "1" },
+      { CODEX_HOME: "/tmp/konductor/codex" },
+    )).toEqual({
+      PATH: "/usr/bin",
+      CLAUDECODE: "1",
+      CODEX_HOME: "/tmp/konductor/codex",
+    });
+  });
+});
 
 const profile = (overrides: Record<string, unknown> = {}) =>
   AgentProfileSchema.parse({ id: "p", title: "P", adapter: "demo", ...overrides });
 
 describe("resolveArgs", () => {
   test("substitutes values for placeholders", () => {
-    expect(resolveArgs(["-p", "{{prompt}}"], { prompt: "do the thing" })).toEqual([
-      "-p",
-      "do the thing",
+    expect(resolveArgs(["--task", "{{task_file}}"], { task_file: "/tmp/brief.md" })).toEqual([
+      "--task",
+      "/tmp/brief.md",
     ]);
   });
 
   test("drops an unfilled placeholder together with the flag it belonged to", () => {
-    expect(resolveArgs(["exec", "--model", "{{model}}", "{{prompt}}"], { prompt: "go" })).toEqual([
+    expect(resolveArgs(["exec", "--model", "{{model}}", "--verbose"], {})).toEqual([
       "exec",
-      "go",
+      "--verbose",
     ]);
   });
 
@@ -46,53 +99,118 @@ describe("resolveArgs", () => {
   });
 });
 
+describe("resolveModel", () => {
+  test("defaults to the adapter's only provider and the harness's default model", () => {
+    const selection = resolveModel(manifest(), profile());
+    expect(selection.provider.id).toBe("acme");
+    expect(selection.model).toBeNull();
+    expect(selection.argument).toBeNull();
+  });
+
+  test("passes the profile's model through for a single-provider harness", () => {
+    expect(resolveModel(manifest(), profile({ model: "acme-1" })).argument).toBe("acme-1");
+  });
+
+  test("accepts a model that is not in the catalog", () => {
+    // Providers ship models faster than manifests are updated.
+    expect(resolveModel(manifest(), profile({ model: "acme-9-preview" })).argument).toBe(
+      "acme-9-preview",
+    );
+  });
+
+  test("rejects another provider on a harness bound to one", () => {
+    expect(() => resolveModel(manifest(), profile({ provider: "openai" }))).toThrow(
+      /only runs on Acme/,
+    );
+    expect(() => resolveModel(manifest(), profile({ provider: "openai" }))).toThrow(
+      AdapterInvocationError,
+    );
+  });
+
+  test("rejects an unknown provider on a multi-provider harness", () => {
+    expect(() => resolveModel(multiProvider(), profile({ provider: "mistral" }))).toThrow(
+      /Choose one of: anthropic, openai/,
+    );
+  });
+
+  test("prefixes the provider when the harness addresses models that way", () => {
+    const selection = resolveModel(
+      multiProvider(),
+      profile({ provider: "openai", model: "gpt-5" }),
+    );
+    expect(selection.provider.id).toBe("openai");
+    expect(selection.argument).toBe("openai/gpt-5");
+  });
+
+  test("explicit overrides win over the profile", () => {
+    const selection = resolveModel(
+      multiProvider(),
+      profile({ provider: "anthropic", model: "claude-opus-5" }),
+      { provider: "openai", model: "gpt-5" },
+    );
+    expect(selection.argument).toBe("openai/gpt-5");
+  });
+});
+
 describe("buildArgv", () => {
-  test("builds an interactive invocation with the profile's model", () => {
-    expect(buildArgv(manifest(), profile({ model: "opus" }), "pane")).toEqual([
+  test("builds the launch invocation with the resolved model", () => {
+    expect(buildArgv(manifest(), profile(), { model: "acme-1" })).toEqual([
       "demo",
       "--model",
-      "opus",
+      "acme-1",
     ]);
   });
 
-  test("omits the model flag entirely when no model is pinned", () => {
-    expect(buildArgv(manifest(), profile(), "pane")).toEqual(["demo"]);
+  test("substitutes a provider independently of the model", () => {
+    expect(
+      buildArgv(
+        manifest({ launch: { args: ["--provider", "{{provider}}", "--model", "{{model}}"] } }),
+        profile(),
+        { provider: "acme" },
+      ),
+    ).toEqual(["demo", "--provider", "acme"]);
   });
 
-  test("passes the prompt as one argv entry, never shell-quoted", () => {
-    const argv = buildArgv(manifest(), profile(), "headless", {
-      prompt: "fix 'quotes' and $VARS; rm -rf /",
-    });
-    expect(argv).toEqual(["demo", "exec", "fix 'quotes' and $VARS; rm -rf /"]);
+  test("omits the model flag entirely when no model is pinned", () => {
+    expect(buildArgv(manifest(), profile())).toEqual(["demo"]);
   });
 
   test("appends the profile's extra args last", () => {
-    expect(buildArgv(manifest(), profile({ args: ["--verbose"] }), "pane")).toEqual([
+    expect(buildArgv(manifest(), profile({ args: ["--verbose"] }))).toEqual([
       "demo",
       "--verbose",
     ]);
   });
 
-  test("lets a profile override the adapter's binary", () => {
-    expect(buildArgv(manifest(), profile({ binary: "/opt/demo" }), "pane")).toEqual(["/opt/demo"]);
-  });
-
-  test("explicit call values win over the profile's model", () => {
-    expect(buildArgv(manifest(), profile({ model: "opus" }), "pane", { model: "haiku" })).toEqual([
+  test("inserts Konductor runtime flags before profile arguments", () => {
+    expect(
+      buildArgv(
+        manifest(),
+        profile({ args: ["--verbose"] }),
+        { model: "acme-1" },
+        ["--mcp-config", "/tmp/konductor/mcp.json"],
+      ),
+    ).toEqual([
       "demo",
       "--model",
-      "haiku",
+      "acme-1",
+      "--mcp-config",
+      "/tmp/konductor/mcp.json",
+      "--verbose",
     ]);
   });
 
-  test("rejects a mode the adapter does not support", () => {
-    expect(() => buildArgv(manifest({ interactive: null }), profile(), "pane")).toThrow(
-      AdapterInvocationError,
-    );
+  test("lets a profile override the adapter's binary", () => {
+    expect(buildArgv(manifest(), profile({ binary: "/opt/demo" }))).toEqual(["/opt/demo"]);
   });
 
-  test("rejects a headless run with no prompt", () => {
-    expect(() => buildArgv(manifest(), profile(), "headless")).toThrow(AdapterInvocationError);
+  test("passes the task file as one argv entry when the launch args ask for it", () => {
+    const argv = buildArgv(
+      manifest({ launch: { args: ["--brief", "{{task_file}}"] } }),
+      profile(),
+      { task_file: "/repo/.konductor/tasks/r1.md" },
+    );
+    expect(argv).toEqual(["demo", "--brief", "/repo/.konductor/tasks/r1.md"]);
   });
 });
 
@@ -108,16 +226,16 @@ describe("buildResumeArgv", () => {
 
 describe("builtin adapters", () => {
   const adapters = builtinAdapters();
+  const byId = (id: string) => adapters.find((a) => a.id === id)!;
 
-  test("ships claude_code, codex and opencode", () => {
-    expect(adapters.map((a) => a.id).sort()).toEqual(["claude_code", "codex", "opencode"]);
-  });
-
-  test("every built-in declares both an interactive and a headless mode", () => {
-    for (const adapter of adapters) {
-      expect(adapter.interactive).not.toBeNull();
-      expect(adapter.headless).not.toBeNull();
-    }
+  test("ships claude_code, codex, gemini_cli, opencode and pi", () => {
+    expect(adapters.map((a) => a.id).sort()).toEqual([
+      "claude_code",
+      "codex",
+      "gemini_cli",
+      "opencode",
+      "pi",
+    ]);
   });
 
   test("only adapters checked against the real CLI are marked verified", () => {
@@ -125,20 +243,82 @@ describe("builtin adapters", () => {
     expect(verified).toEqual(["claude_code"]);
   });
 
-  test("claude_code produces the documented headless invocation", () => {
-    const claude = adapters.find((a) => a.id === "claude_code")!;
-    const argv = buildArgv(
-      claude,
-      profile({ adapter: "claude_code" }),
-      "headless",
-      { prompt: "ship it" },
+  test("vendor CLIs are bound to their own provider", () => {
+    expect(byId("claude_code").providers.map((p) => p.id)).toEqual(["anthropic"]);
+    expect(byId("codex").providers.map((p) => p.id)).toEqual(["openai"]);
+    expect(byId("gemini_cli").providers.map((p) => p.id)).toEqual(["google"]);
+  });
+
+  test("claude_code refuses to run on another provider", () => {
+    expect(() =>
+      resolveModel(byId("claude_code"), profile({ adapter: "claude_code", provider: "openai" })),
+    ).toThrow(/only runs on Anthropic/);
+  });
+
+  test("opencode routes to several providers and prefixes the model", () => {
+    const opencode = byId("opencode");
+    expect(opencode.providers.length).toBeGreaterThan(1);
+    const selection = resolveModel(
+      opencode,
+      profile({ adapter: "opencode", provider: "google", model: "gemini-2.5-pro" }),
     );
-    expect(argv).toEqual(["claude", "-p", "ship it", "--output-format", "json"]);
+    expect(selection.argument).toBe("google/gemini-2.5-pro");
+    expect(buildArgv(opencode, profile(), { model: selection.argument! })).toEqual([
+      "opencode",
+      "--model",
+      "google/gemini-2.5-pro",
+    ]);
+  });
+
+  test("pi passes provider and model as separate documented flags", () => {
+    const pi = byId("pi");
+    const selection = resolveModel(
+      pi,
+      profile({ adapter: "pi", provider: "openai", model: "gpt-5" }),
+    );
+    expect(selection.argument).toBe("gpt-5");
+    expect(buildArgv(pi, profile(), {
+      provider: selection.provider.id,
+      model: selection.argument!,
+    })).toEqual(["pi", "--provider", "openai", "--model", "gpt-5"]);
+    expect(buildArgv(pi, profile(), { provider: "openai" })).toEqual([
+      "pi",
+      "--provider",
+      "openai",
+    ]);
+    expect(buildResumeArgv(pi, profile(), "session-123")).toEqual([
+      "pi",
+      "--session",
+      "session-123",
+    ]);
+  });
+
+  test("claude_code launches the TUI with the pinned model", () => {
+    const claude = byId("claude_code");
+    const selection = resolveModel(claude, profile({ model: "claude-opus-5" }));
+    expect(buildArgv(claude, profile(), { model: selection.argument! })).toEqual([
+      "claude",
+      "--model",
+      "claude-opus-5",
+    ]);
+  });
+
+  test("every catalog model has a non-empty id", () => {
+    for (const adapter of adapters) {
+      for (const provider of adapter.providers) {
+        for (const model of provider.models) expect(model.id.length).toBeGreaterThan(0);
+      }
+    }
   });
 
   test("every built-in screen pattern is a valid regex", () => {
     for (const adapter of adapters) {
-      const all = [...adapter.screen.blocked, ...adapter.screen.idle, ...adapter.screen.done];
+      const all = [
+        ...adapter.screen.blocked,
+        ...adapter.screen.working,
+        ...adapter.screen.idle,
+        ...adapter.screen.done,
+      ];
       for (const source of all) {
         expect(() => new RegExp(source, "i")).not.toThrow();
       }

@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readConfig, hostGlobal } from "@konductor/store";
 import { DEFAULT_HOST_PORT, hostBaseUrl, HOST_SERVER_SCRIPT } from "@konductor/host";
+import { withOpenFileLimit } from "./process-limits.js";
 
 export class HostRequestError extends Error {
   code: string;
@@ -102,6 +103,16 @@ export async function waitForHost(cwd: string, timeoutMs = 4000): Promise<void> 
   throw lastError ?? new HostRequestError("Konductor host did not become ready in time.");
 }
 
+/** Start the local host on demand for commands that launch an agent. */
+export async function ensureHostRunning(cwd: string): Promise<void> {
+  if (await isHostRunning()) {
+    await waitForHost(cwd);
+    return;
+  }
+  await startHostProcess(cwd);
+  await waitForHost(cwd);
+}
+
 export async function readHostPid(): Promise<number | null> {
   const file = hostGlobal().pidFile;
   if (!existsSync(file)) return null;
@@ -129,7 +140,7 @@ export async function startHostProcess(cwd: string): Promise<{ pid: number; port
   const port = await resolvedHostPort(cwd);
   const host = hostGlobal();
   await mkdir(host.dir, { recursive: true });
-  const proc = Bun.spawn(["bun", "run", HOST_SERVER_SCRIPT], {
+  const proc = Bun.spawn(withOpenFileLimit(["bun", "run", HOST_SERVER_SCRIPT]), {
     env: {
       ...process.env,
       KONDUCTOR_HOST_PORT: String(port),

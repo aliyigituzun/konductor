@@ -1,50 +1,36 @@
-import React, { useContext, useEffect, useState } from "react";
+import React, { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import {
+  createProjectFeatureCategory,
   createProjectFeature,
+  createProjectTodo,
   fetchProject,
   formatApiError,
+  saveProjectFeaturePhases,
+  reorderProjectFeaturePhases,
+  resetProjectTelemetry,
   startProjectRun,
+  updateProjectFeature,
+  updateProjectTodo,
   type ProjectData,
 } from "../lib/registry.js";
 import { AppContext } from "../AppContext.js";
 import { StatusStrip } from "../components/StatusStrip.js";
-import { PhaseBoard } from "../components/PhaseBoard.js";
+import { StatusNav, type StatusNavItem } from "../components/StatusNav.js";
 import { BlockersPanel } from "../components/BlockersPanel.js";
+import { DecisionsPanel } from "../components/decisions/DecisionsPanel.js";
 import { TokenUsagePanel } from "../components/TokenUsagePanel.js";
 import { ActivityPanel } from "../components/ActivityPanel.js";
 import { FeaturesPanel } from "../components/FeaturesPanel.js";
-import { ProjectDocsPanel } from "../components/ProjectDocsPanel.js";
+import { ProjectFilesPanel } from "../components/project-files/ProjectFilesPanel.js";
 import { UpdatesFeed } from "../components/UpdatesFeed.js";
 import { AgentsPanel } from "../components/AgentsPanel.js";
 import { ProjectInfoModal } from "../components/ProjectInfoModal.js";
-
-const s: Record<string, React.CSSProperties> = {
-  page: { padding: "24px 32px", maxWidth: 1100, margin: "0 auto" },
-  loading: { color: "var(--text-tertiary)", fontSize: 13, padding: "24px 0" },
-  error: { color: "var(--danger)", fontSize: 13, padding: "24px 0" },
-  summary: {
-    background: "var(--bg-canvas)",
-    border: "1px solid var(--border-subtle)",
-    borderRadius: "var(--radius-md)",
-    padding: 16,
-    marginBottom: 24,
-    boxShadow: "var(--shadow-soft)",
-  },
-  summaryText: {
-    fontSize: 14,
-    color: "var(--text-primary)",
-    lineHeight: 1.6,
-  },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: "0.06em",
-    color: "var(--text-tertiary)",
-    marginBottom: 8,
-  },
-};
+import { AssetManagerPanel } from "../components/AssetManagerPanel.js";
+import { ReviewsPanel } from "../components/ReviewsPanel.js";
+import { TodosPanel } from "../components/TodosPanel.js";
+import { ConfigurationDialog } from "../components/ConfigurationDialog.js";
+import "./ProjectDetail.css";
 
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
@@ -58,11 +44,17 @@ export function ProjectDetail() {
   const [refreshToken, setRefreshToken] = useState(0);
 
   const activeTab = searchParams.get("tab") ?? "status";
+  const configurationOpen = searchParams.has("config");
+  const statusScroller = useRef<HTMLDivElement>(null);
+
+  // Each tab is its own page; carrying the previous tab's scroll offset over reads
+  // as a glitch.
+  useEffect(() => {
+    document.querySelector(".k-main")?.scrollTo({ top: 0 });
+  }, [activeTab]);
 
   useEffect(() => {
-    if (searchParams.get("info") === "1") {
-      setShowInfo(true);
-    }
+    if (searchParams.get("info") === "1") setShowInfo(true);
   }, [searchParams]);
 
   async function loadProject(projectId: string) {
@@ -85,32 +77,87 @@ export function ProjectDetail() {
     setRefreshToken((current) => current + 1);
   }
 
-  if (loading) return <div style={{ padding: 32 }}><p style={s.loading}>Loading…</p></div>;
-  if (error) return <div style={{ padding: 32 }}><p style={s.error}>{error}</p></div>;
-  if (!data) return <div style={{ padding: 32 }}><p style={s.error}>Project not found.</p></div>;
+  const navItems = useMemo<StatusNavItem[]>(() => {
+    const snap = data?.status ?? null;
+    const updates = data?.updates ?? [];
+    const telemetry = data?.telemetry ?? null;
+    const openDecisions = (data?.decisions ?? []).filter((decision) => decision.status === "open").length;
+    if (!snap) return [];
+    const items: StatusNavItem[] = [
+      { id: "sec-updates", label: "Updates", count: updates.length },
+    ];
+    if (snap.issues.blockers.length > 0) items.push({ id: "sec-blockers", label: "Blockers", count: snap.issues.blockers.length, tone: "danger" });
+    items.push({ id: "sec-decisions", label: "Decisions", count: openDecisions, ...(openDecisions > 0 ? { tone: "warning" as const } : {}) });
+    if (snap.issues.external_dependencies.length > 0) items.push({ id: "sec-dependencies", label: "Dependencies", count: snap.issues.external_dependencies.length });
+    items.push({ id: "sec-tokens", label: "Model usage" });
+    if (telemetry && (telemetry.top_tools.length > 0 || telemetry.top_files.length > 0)) items.push({ id: "sec-activity", label: "Activity" });
+    return items;
+  }, [data]);
+
+  if (loading) return <p className="k-loading">Loading…</p>;
+  if (error) return <p className="k-error" style={{ padding: 16 }}>{error}</p>;
+  if (!data) return <p className="k-error" style={{ padding: 16 }}>Project not found.</p>;
 
   const { entry, status: snap, telemetry, updates = [] } = data;
   const activeRuns = data.runs.filter((run) => run.status === "running" || run.status === "queued").length;
 
   let content: React.ReactNode;
   if (activeTab === "docs") {
-    content = <ProjectDocsPanel projectId={entry.id} />;
+    content = <ProjectFilesPanel projectId={entry.id} />;
   } else if (activeTab === "features") {
     content = (
       <FeaturesPanel
         projectId={entry.id}
         snap={snap}
         config={data.config}
+        decisions={data.decisions}
+        onDecisionsChanged={refreshProject}
         onCreateFeature={async (payload) => {
           const created = await createProjectFeature(entry.id, payload);
           await refreshProject();
           return created;
         }}
+        onCreateCategory={async (title) => {
+          const created = await createProjectFeatureCategory(entry.id, title);
+          await refreshProject();
+          return created;
+        }}
+        onUpdateFeature={async (featureId, payload) => {
+          await updateProjectFeature(entry.id, featureId, payload);
+          await refreshProject();
+        }}
+        onSavePhases={async (phases) => {
+          await saveProjectFeaturePhases(entry.id, phases);
+          await refreshProject();
+        }}
+        onReorderPhases={async (phaseIds) => {
+          await reorderProjectFeaturePhases(entry.id, phaseIds);
+          await refreshProject();
+        }}
         onStartRun={async (payload) => {
-          const run = await startProjectRun(entry.id, {
-            ...payload,
-            source: "dashboard",
-          });
+          const run = await startProjectRun(entry.id, { ...payload, source: "dashboard" });
+          await refreshProject();
+          return run;
+        }}
+      />
+    );
+  } else if (activeTab === "todos") {
+    content = (
+      <TodosPanel
+        projectId={entry.id}
+        snap={snap}
+        config={data.config}
+        onCreate={async (payload) => {
+          const created = await createProjectTodo(entry.id, payload);
+          await refreshProject();
+          return created;
+        }}
+        onUpdate={async (todoId, payload) => {
+          await updateProjectTodo(entry.id, todoId, payload);
+          await refreshProject();
+        }}
+        onStartRun={async (payload) => {
+          const run = await startProjectRun(entry.id, { ...payload, source: "dashboard" });
           await refreshProject();
           return run;
         }}
@@ -121,52 +168,74 @@ export function ProjectDetail() {
       <AgentsPanel
         projectId={entry.id}
         config={data.config}
+        status={snap}
         initialRuns={data.runs}
         refreshToken={refreshToken}
         onDataChange={refreshProject}
+        renderConfiguration={false}
       />
     );
+  } else if (activeTab === "assets") {
+    content = <div className="k-page"><AssetManagerPanel projectId={entry.id} profiles={data.config?.agents?.profiles ?? []} /></div>;
+  } else if (activeTab === "reviews") {
+    content = <div className="k-page"><ReviewsPanel projectId={entry.id} refreshToken={refreshToken} /></div>;
   } else if (!snap) {
     content = (
-      <>
-        <h2>{entry.name}</h2>
-        <p style={{ color: "var(--text-tertiary)", marginTop: 8 }}>
-          No status file found. Run <code>konductor mcp serve</code> to let Claude write a status update.
-        </p>
-      </>
+      <div className="st">
+        <aside className="st__side" />
+        <div className="st__main">
+          <p className="k-empty">No status yet · <code>konductor mcp serve</code></p>
+        </div>
+      </div>
     );
   } else {
     content = (
-      <>
-        <div style={{ marginBottom: 24 }}>
-          <div style={s.sectionTitle}>Status Summary</div>
-          <div style={s.summary}>
-            <p style={s.summaryText}>{snap.status.summary}</p>
+      <div className="st">
+        <aside className="st__side">
+          <StatusNav items={navItems} scroller={statusScroller} />
+        </aside>
+        <div className="st__main" ref={statusScroller}>
+          <div id="sec-updates" className="st__anchor"><UpdatesFeed updates={updates} /></div>
+          <BlockersPanel
+            blockers={snap.issues.blockers}
+            dependencies={snap.issues.external_dependencies}
+          />
+          <DecisionsPanel
+            projectId={entry.id}
+            decisions={data.decisions}
+            snap={snap}
+            config={data.config}
+            onChanged={refreshProject}
+          />
+          <div id="sec-tokens" className="st__anchor">
+            <TokenUsagePanel
+              telemetry={telemetry}
+              onReset={async () => {
+                await resetProjectTelemetry(entry.id);
+                await refreshProject();
+              }}
+            />
           </div>
+          <div id="sec-activity" className="st__anchor"><ActivityPanel telemetry={telemetry} /></div>
         </div>
-
-        <UpdatesFeed updates={updates} />
-
-        <PhaseBoard phases={snap.phases} />
-
-        <BlockersPanel
-          blockers={snap.issues.blockers}
-          decisions={snap.issues.decisions_needed}
-          dependencies={snap.issues.external_dependencies}
-        />
-
-        <TokenUsagePanel telemetry={telemetry} />
-        <ActivityPanel telemetry={telemetry} />
-      </>
+      </div>
     );
   }
 
   return (
-    <div style={{ ...s.page, maxWidth: activeTab === "docs" ? 1200 : 1100 }}>
+    <div className="k-page--fill">
+      <AgentsPanel
+        projectId={entry.id}
+        config={data.config}
+        status={snap}
+        initialRuns={data.runs}
+        refreshToken={refreshToken}
+        onDataChange={refreshProject}
+        configurationOnly
+      />
       {snap && (
         <StatusStrip
           snap={snap}
-          lastSync={entry.last_sync}
           activeRuns={activeRuns}
           onShowInfo={() => setShowInfo(true)}
         />
@@ -187,6 +256,15 @@ export function ProjectDetail() {
           }}
         />
       )}
+      <ConfigurationDialog
+        open={configurationOpen}
+        scope={{ type: "project", id: entry.id, label: entry.name, projectIds: [entry.id] }}
+        onClose={() => {
+          const next = new URLSearchParams(searchParams);
+          next.delete("config");
+          setSearchParams(next);
+        }}
+      />
     </div>
   );
 }

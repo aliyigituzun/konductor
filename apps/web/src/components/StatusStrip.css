@@ -1,0 +1,16 @@
+.strip {
+  min-height: var(--strip-h);
+  display: flex;
+  align-items: center;
+  gap: 0;
+  padding: 0 var(--gutter);
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 14px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-shrink: 0;
+}
+.strip__item { display: flex; align-items: baseline; gap: 6px; padding-right: 24px; white-space: nowrap; }
+.strip__label { color: var(--text-tertiary); font-size: 13px; }
+.strip__value { font-weight: 500; font-variant-numeric: tabular-nums; }

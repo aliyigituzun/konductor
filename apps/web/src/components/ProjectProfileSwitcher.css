@@ -1,0 +1,59 @@
+.pps { position: fixed; left: 16px; bottom: 16px; z-index: 30; }
+.pps__trigger {
+  width: 210px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-canvas);
+  box-shadow: var(--shadow-pop);
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+}
+.pps__trigger:hover { background: var(--bg-hover); }
+.pps__dot {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.pps__pop {
+  position: absolute;
+  left: 0;
+  bottom: 46px;
+  width: 280px;
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--bg-canvas);
+  box-shadow: var(--shadow-pop);
+  display: grid;
+  gap: 2px;
+}
+.pps__item {
+  width: 100%;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+}
+.pps__item:hover { background: var(--bg-hover); }
+.pps__item--active { background: var(--bg-active); }
+.pps__sep { border-top: 1px solid var(--border-subtle); margin: 4px 0; }
+.pps__settings { width: 24px; text-align: center; color: var(--text-secondary); }

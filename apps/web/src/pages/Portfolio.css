@@ -1,0 +1,16 @@
+.pf__name { font-weight: 500; }
+.pf__name:hover { color: var(--accent); }
+.pf__moved {
+  margin-left: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warning);
+  border: 1px solid currentColor;
+  border-radius: var(--radius);
+  padding: 0 4px;
+  cursor: help;
+}
+.pf__actions { display: flex; gap: 2px; justify-content: flex-end; opacity: 0; }
+.k-table tr:hover .pf__actions, .pf__actions:focus-within { opacity: 1; }
+.pf__delete:hover { color: var(--danger); }
+.pf__empty { padding: 40px var(--gutter); color: var(--text-tertiary); font-size: 14px; display: grid; gap: 8px; }

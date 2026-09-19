@@ -4,11 +4,14 @@ import { AgentStatusSchema, AgentTransportSchema } from "./agent.js";
 export const RunSourceSchema = z.enum(["dashboard", "cli"]);
 export const RunStatusSchema = z.enum(["queued", "running", "succeeded", "failed", "stopped"]);
 export const RunTaskStateSchema = z.enum(["started", "completed", "failed", "stopped"]);
+/** Delivery of the initial task brief is tracked independently of process liveness. */
+export const RunBootstrapStateSchema = z.enum(["starting", "awaiting_operator", "task_sent"]);
 
 export const RunContextSchema = z.object({
   run_id: z.string(),
   profile_id: z.string(),
   feature_item_id: z.string().nullable().optional(),
+  todo_id: z.string().nullable().optional(),
   source: RunSourceSchema,
 });
 
@@ -23,9 +26,14 @@ export const RunSummarySchema = z.object({
   adapter_id: z.string(),
   /** Short human-addressable name, unique among live agents. */
   slug: z.string(),
+  /** Provider and model the agent was launched with; null when the harness default was used. */
+  provider: z.string().nullable().default(null),
+  model: z.string().nullable().default(null),
+  /** Runs recorded before the pipe mode was retired carry "headless" here. */
   transport: AgentTransportSchema.default("headless"),
-  /** tmux session and pane, when transport is "tmux". */
+  /** tmux session, window and pane, when transport is "tmux". */
   session_name: z.string().nullable().default(null),
+  window_id: z.string().nullable().default(null),
   pane_id: z.string().nullable().default(null),
   /** Last observed live status; null once the run is finalized. */
   agent_status: AgentStatusSchema.nullable().default(null),
@@ -33,7 +41,11 @@ export const RunSummarySchema = z.object({
   worktree_path: z.string().nullable().default(null),
   branch: z.string().nullable().default(null),
   feature_item_id: z.string().nullable(),
+  /** To-do selected when this run was launched, if any. */
+  todo_id: z.string().nullable().optional(),
   feature_item_title: z.string().nullable().optional(),
+  /** Decision whose chosen option this run was launched to carry out. */
+  decision_id: z.string().nullable().optional(),
   prompt_excerpt: z.string(),
   prompt_packs: z.array(z.string()),
   source: RunSourceSchema,
@@ -51,6 +63,9 @@ export const RunSummarySchema = z.object({
   last_status_at: z.string().datetime().nullable().optional(),
   last_error: z.string().nullable().optional(),
   terminal_preview: z.string().default(""),
+  /** A first-run dialog may delay task delivery without making the pane dead. */
+  bootstrap_state: RunBootstrapStateSchema.optional(),
+  bootstrap_reason: z.string().nullable().optional(),
 });
 
 export const HostStateSchema = z.object({
@@ -77,6 +92,7 @@ export const ProjectImportantPathsSchema = z.object({
 export type RunSource = z.infer<typeof RunSourceSchema>;
 export type RunStatus = z.infer<typeof RunStatusSchema>;
 export type RunTaskState = z.infer<typeof RunTaskStateSchema>;
+export type RunBootstrapState = z.infer<typeof RunBootstrapStateSchema>;
 export type RunContext = z.infer<typeof RunContextSchema>;
 export type RunSummary = z.infer<typeof RunSummarySchema>;
 export type HostState = z.infer<typeof HostStateSchema>;

@@ -110,7 +110,7 @@ export async function runDelete(args: string[]): Promise<void> {
   console.log(`${fmt.bold("Project:")} ${projectName} ${fmt.dim(`(${projectId})`)}`);
   console.log(`${fmt.bold("Repo:")}    ${fmt.dim(repoPath)}\n`);
   console.log(fmt.bold("Will remove:"));
-  console.log(`  ${fmt.green("✓")}  registry entry  ${fmt.dim("~/.konductor/registry.json")}`);
+  console.log(`  ${fmt.green("✓")}  registry entry  ${fmt.dim("host SQLite registry")}`);
   if (!keepLocal) {
     if (cfgExists) console.log(`  ${fmt.green("✓")}  config file     ${fmt.dim(cfgFile)}`);
     if (mcpExists) console.log(`  ${fmt.green("✓")}  MCP config      ${fmt.dim(mcpFile)}`);

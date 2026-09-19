@@ -1,128 +1,58 @@
 import React from "react";
 import type { TelemetrySnapshot } from "../lib/types.js";
 
-const s: Record<string, React.CSSProperties> = {
-  container: { marginBottom: 24 },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: "0.06em",
-    color: "var(--text-tertiary)",
-    marginBottom: 8,
-  },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-    background: "var(--bg-canvas)",
-    border: "1px solid var(--border-subtle)",
-    borderRadius: "var(--radius-md)",
-    overflow: "hidden",
-    boxShadow: "var(--shadow-soft)",
-    fontSize: 13,
-    marginBottom: 12,
-  },
-  th: {
-    padding: "8px 12px",
-    textAlign: "left",
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: "0.05em",
-    color: "var(--text-tertiary)",
-    background: "var(--bg-panel)",
-    borderBottom: "1px solid var(--border-subtle)",
-  },
-  td: {
-    padding: "8px 12px",
-    borderBottom: "1px solid var(--border-subtle)",
-    color: "var(--text-primary)",
-  },
-  unavailable: {
-    fontSize: 13,
-    color: "var(--text-tertiary)",
-    fontStyle: "italic",
-  },
-};
-
 interface ActivityPanelProps {
   telemetry: TelemetrySnapshot | null;
 }
 
+/** Tool and file activity from the latest telemetry snapshot. Hidden when there is none. */
 export function ActivityPanel({ telemetry }: ActivityPanelProps) {
-  if (!telemetry) {
-    return (
-      <div style={s.container}>
-        <div style={s.sectionTitle}>File & Tool Activity</div>
-        <p style={s.unavailable}>No telemetry data. Run konductor sync first.</p>
-      </div>
-    );
-  }
+  if (!telemetry) return null;
+  const tools = telemetry.top_tools;
+  const files = telemetry.top_files;
+  if (tools.length === 0 && files.length === 0) return null;
 
   return (
-    <>
-      {telemetry.top_tools.length > 0 && (
-        <div style={s.container}>
-          <div style={s.sectionTitle}>Top Tools</div>
-          <table style={s.table}>
-            <thead>
-              <tr>
-                <th style={s.th}>Tool</th>
-                <th style={s.th}>Count</th>
-                <th style={s.th}>Signal</th>
-              </tr>
-            </thead>
-            <tbody>
-              {telemetry.top_tools.map((t) => (
-                <tr key={t.name}>
-                  <td style={s.td}>{t.name}</td>
-                  <td style={{ ...s.td, fontVariantNumeric: "tabular-nums" }}>{t.count}</td>
-                  <td style={{ ...s.td, color: "var(--text-tertiary)", fontSize: 11 }}>
-                    {t.signal_status}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+    <div className="act">
+      {tools.length > 0 && (
+        <section className="k-section">
+          <div className="k-section__header">Tools<span className="k-section__count">{tools.length}</span></div>
+          <div className="k-table-scroll" style={{ border: "none", borderRadius: 0 }}>
+            <table className="k-table k-table--static">
+              <thead><tr><th>Tool</th><th className="k-num">Count</th><th>Signal</th></tr></thead>
+              <tbody>
+                {tools.map((t) => (
+                  <tr key={t.name}>
+                    <td>{t.name}</td>
+                    <td className="k-num">{t.count}</td>
+                    <td className="k-faint" style={{ fontSize: 11 }}>{t.signal_status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
-
-      {telemetry.top_files.length > 0 && (
-        <div style={s.container}>
-          <div style={s.sectionTitle}>File Activity</div>
-          <table style={s.table}>
-            <thead>
-              <tr>
-                <th style={s.th}>Path</th>
-                <th style={s.th}>Reads</th>
-                <th style={s.th}>Writes</th>
-                <th style={s.th}>Signal</th>
-              </tr>
-            </thead>
-            <tbody>
-              {telemetry.top_files.map((f) => (
-                <tr key={f.path}>
-                  <td style={{ ...s.td, fontFamily: "monospace", fontSize: 12 }}>{f.path}</td>
-                  <td style={{ ...s.td, fontVariantNumeric: "tabular-nums" }}>{f.reads}</td>
-                  <td style={{ ...s.td, fontVariantNumeric: "tabular-nums" }}>{f.writes}</td>
-                  <td style={{ ...s.td, color: "var(--text-tertiary)", fontSize: 11 }}>
-                    {f.signal_status}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {files.length > 0 && (
+        <section className="k-section">
+          <div className="k-section__header">Files<span className="k-section__count">{files.length}</span></div>
+          <div className="k-table-scroll" style={{ border: "none", borderRadius: 0 }}>
+            <table className="k-table k-table--static">
+              <thead><tr><th>Path</th><th className="k-num">Reads</th><th className="k-num">Writes</th><th>Signal</th></tr></thead>
+              <tbody>
+                {files.map((f) => (
+                  <tr key={f.path}>
+                    <td className="k-mono">{f.path}</td>
+                    <td className="k-num">{f.reads}</td>
+                    <td className="k-num">{f.writes}</td>
+                    <td className="k-faint" style={{ fontSize: 11 }}>{f.signal_status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
-
-      {telemetry.top_tools.length === 0 && telemetry.top_files.length === 0 && (
-        <div style={s.container}>
-          <div style={s.sectionTitle}>File & Tool Activity</div>
-          <p style={s.unavailable}>
-            No activity data in latest telemetry snapshot.
-          </p>
-        </div>
-      )}
-    </>
+    </div>
   );
 }

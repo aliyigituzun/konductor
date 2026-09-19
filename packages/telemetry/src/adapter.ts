@@ -103,10 +103,7 @@ function getAttrFloat(attrs: OtlpAttribute[] = [], key: string): number | null {
   return isNaN(n) ? null : n;
 }
 
-/**
- * Sum a claude_code.token.usage metric filtered by the `type` attribute.
- * Claude Code emits one metric with multiple data points, each with type=input/output/cacheRead/cacheCreation.
- */
+/** Sum a claude_code.token.usage metric filtered by the `type` attribute. */
 function sumTokenMetric(metrics: OtlpMetric[], tokenType: string): number | null {
   const m = metrics.find((x) => x.name === "claude_code.token.usage");
   if (!m) return null;
@@ -138,7 +135,6 @@ export function normalizeSession(
 ): TelemetrySnapshot {
   const now = new Date().toISOString();
 
-  // Collect all metrics
   const allMetrics: OtlpMetric[] = [];
   for (const rm of otlpData.resourceMetrics ?? []) {
     for (const sm of rm.scopeMetrics ?? []) {
@@ -146,7 +142,6 @@ export function normalizeSession(
     }
   }
 
-  // Collect all spans
   const allSpans: OtlpSpan[] = [];
   for (const rs of otlpData.resourceSpans ?? []) {
     for (const ss of rs.scopeSpans ?? []) {
@@ -154,7 +149,6 @@ export function normalizeSession(
     }
   }
 
-  // Collect all log records
   const allLogs: OtlpLogRecord[] = [];
   for (const rl of otlpData.resourceLogs ?? []) {
     for (const sl of rl.scopeLogs ?? []) {
@@ -217,7 +211,6 @@ export function normalizeSession(
   ).length || null;
   const requestCount = requestCountFromLogs ?? requestCountFromMetric;
 
-  // Extract session_id from the first log event
   let resolvedSessionId = sessionId ?? null;
   if (!resolvedSessionId && allLogs.length > 0) {
     resolvedSessionId = getAttrString(allLogs[0]!.attributes, "session.id");

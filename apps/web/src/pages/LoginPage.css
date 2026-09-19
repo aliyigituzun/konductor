@@ -1,0 +1,16 @@
+.login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+}
+
+.login__card {
+  width: 100%;
+  max-width: 360px;
+}
+
+.login__body {
+  display: grid;
+  gap: 12px;
+}

@@ -1,5 +1,5 @@
 {
-  "schema_version": "0.2.0",
+  "schema_version": "0.3.0",
   "project_id": "konductor",
   "project_name": "konductor",
   "repo_root": ".",
@@ -8,14 +8,16 @@
     "primary": "claude_code"
   },
   "agents": {
-    "default_profile": "claude-default",
+    "default_profile": "claude-new",
     "profiles": [
       {
-        "id": "claude-default",
+        "id": "claude-code-fresh",
         "title": "Claude Code",
-        "runner": "claude_code",
+        "adapter": "claude_code",
         "binary": "claude",
+        "provider": "anthropic",
         "args": [],
+        "worktree": false,
         "default_mcp": true,
         "default_working_dir": "project_root",
         "default_env": {},
@@ -25,21 +27,16 @@
         }
       },
       {
-        "id": "minimax-working",
-        "title": "minimax-working",
-        "runner": "minimax",
-        "model": "MiniMax-M3",
-        "api_base": "https://api.minimax.io/v1/text/chatcompletion_v2",
-        "api_key_env": "MINIMAX_API_KEY",
-        "token_id": "konductor-minimax",
-        "temperature": 0.2,
-        "default_mcp": false,
+        "id": "claude-new",
+        "title": "claude_new",
+        "adapter": "claude_code",
+        "provider": "anthropic",
+        "model": "claude-sonnet-5",
+        "args": [],
+        "worktree": false,
+        "default_mcp": true,
         "default_working_dir": "project_root",
-        "default_env": {},
-        "telemetry": {
-          "provider": "minimax",
-          "mode": "responses"
-        }
+        "default_env": {}
       }
     ],
     "prompt_packs": [
@@ -49,9 +46,98 @@
         "instructions": "Work as the active coding agent for this project. Start by understanding the assigned run context and the current project state before you edit code. Inspect the relevant code paths first, then implement the smallest correct change. If Konductor MCP is available, call get_run_context, get_project_context, and get_current_status at the start. Use write_update after repository inspection, after meaningful implementation steps, and whenever you hit a blocker or scope change. If you complete or materially change the selected feature, call write_status before you finish so the dashboard reflects the real outcome. Do not claim success unless the code changes landed and you either wrote status through MCP or explicitly explain why you could not.",
         "file_refs": [],
         "mcp_reminder": "Konductor MCP should be available in this repo. Use it early, keep updates flowing through write_update, and persist the final tracked state with write_status whenever the task outcome changes project status."
+      },
+      {
+        "id": "frontend-design",
+        "title": "Frontend Design",
+        "instructions": "Use the attached Frontend Design skill for UI creation or substantial visual redesign work. Follow the operator's explicit brief over general skill guidance, and preserve the project's established product constraints and accessibility requirements.",
+        "file_refs": [
+          ".agents/skills/frontend-design/SKILL.md"
+        ]
+      },
+      {
+        "id": "test-bug-triage",
+        "title": "[Test] Bug Triage",
+        "instructions": "Dummy pack for testing. Reproduce the reported bug before changing anything. Write a failing test that captures it, then fix with the smallest change that makes the test pass. Report the root cause in one sentence.",
+        "file_refs": [
+          "IMPLEMENTATION.md"
+        ],
+        "mcp_reminder": "Call get_run_context first and post a write_update once the bug is reproduced."
+      },
+      {
+        "id": "test-refactor-only",
+        "title": "[Test] Refactor Only",
+        "instructions": "Dummy pack for testing. Improve structure without changing behavior. No new features, no bug fixes. Every commit must keep the existing test suite green. Explain each structural change in the update log.",
+        "file_refs": [],
+        "mcp_reminder": null
+      },
+      {
+        "id": "test-docs-sync",
+        "title": "[Test] Docs Sync",
+        "instructions": "Dummy pack for testing. Compare the implementation against the project docs and update the docs to match reality. Do not edit source code. Flag any behavior that looks unintended rather than documenting it as-is.",
+        "file_refs": [
+          "IMPLEMENTATION.md",
+          "CLI_IMPLEMENTATION.md",
+          "USAGE.md"
+        ]
+      },
+      {
+        "id": "test-review-strict",
+        "title": "[Test] Strict Reviewer",
+        "instructions": "Dummy pack for testing. Act as a read-only reviewer. Do not modify files. Produce a list of findings ordered by severity, each with file path, line, and a concrete failure scenario. Skip style nits.",
+        "file_refs": [],
+        "mcp_reminder": "Findings go through write_update; do not call write_status."
+      },
+      {
+        "id": "test-storage-migration",
+        "title": "[Test] Storage Migration",
+        "instructions": "Dummy pack for testing. Any schema or SQLite change must ship with a migration, a backup step, and a test that runs the migration against a fixture database. Read STORAGE.md before touching packages/store.",
+        "file_refs": [
+          "STORAGE.md"
+        ],
+        "mcp_reminder": "Report migration progress via write_update after each step."
+      },
+      {
+        "id": "test-empty-pack",
+        "title": "[Test] Minimal Pack",
+        "instructions": "Dummy pack with the minimum fields set. Used to verify the launcher handles packs with no file refs and no MCP reminder.",
+        "file_refs": []
       }
     ],
-    "skill_profiles": []
+    "skill_profiles": [
+      {
+        "id": "frontend-design",
+        "title": "Frontend Design by Anthropic",
+        "source": "github",
+        "package_name": "anthropics/skills:skills/frontend-design",
+        "description": "Guidance for distinctive, intentional visual design when building new UI or reshaping an existing one.",
+        "homepage": "https://github.com/anthropics/skills/tree/main/skills/frontend-design",
+        "registry_url": "https://github.com/anthropics/skills",
+        "keywords": [
+          "frontend",
+          "design",
+          "ui",
+          "typography",
+          "accessibility"
+        ],
+        "notes": "Installed project-locally for Agent Skills consumers and Claude-compatible agents; also available as a selectable Konductor prompt pack."
+      }
+    ],
+    "provider_connections": [
+      {
+        "id": "minimax",
+        "title": "minimax",
+        "kind": "remote_api",
+        "endpoint": "https://api.minimax.io/antrophic",
+        "provider": "minimax",
+        "compatible_adapters": [
+          "pi"
+        ],
+        "models": [],
+        "auth_env": "MINIMAX_API_KEY",
+        "enabled": true
+      }
+    ]
   },
   "dashboard": {
     "mode": "local"
@@ -63,6 +149,29 @@
   "host": {
     "port": 4096,
     "log_retention": 50,
-    "auto_start": false
+    "auto_start": false,
+    "tmux_session": "konductor"
+  },
+  "assets": {
+    "enabled": true,
+    "preset": "page_based",
+    "custom_preset_id": null,
+    "asset_roots": [],
+    "selected_profile_ids": [
+      "claude-code-fresh"
+    ],
+    "review_policy": "continue_after_handoff",
+    "customer_reviews": {
+      "enabled": false,
+      "default_expiry_days": 14
+    }
+  },
+  "preview": {
+    "command": "cd apps/web && bun --bun vite --port {port} --strictPort",
+    "install_command": "bun install --frozen-lockfile",
+    "port_env": "PORT",
+    "ready_path": "/",
+    "ready_timeout_ms": 90000,
+    "env": {}
   }
 }

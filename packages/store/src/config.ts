@@ -7,6 +7,7 @@ import {
   type AgentProfile,
   type PromptPack,
   type SkillProfile,
+  type ProviderConnection,
 } from "@konductor/schema";
 import { configPath } from "./paths.js";
 
@@ -32,24 +33,6 @@ export function defaultPromptPack(): PromptPack {
   };
 }
 
-export function defaultClaudeProfile(): AgentProfile {
-  return {
-    id: "claude-default",
-    title: "Claude Code",
-    adapter: "claude_code",
-    args: [],
-    mode: "pane",
-    worktree: false,
-    default_mcp: true,
-    default_working_dir: "project_root",
-    default_env: {},
-    telemetry: {
-      provider: "opentelemetry",
-      mode: "collector",
-    },
-  };
-}
-
 /**
  * Bring a pre-0.3.0 profile forward.
  *
@@ -60,6 +43,8 @@ export function defaultClaudeProfile(): AgentProfile {
  */
 export function migrateProfile(raw: unknown): AgentProfile | null {
   const profile = (raw ?? {}) as Record<string, unknown>;
+  // `mode` is gone; every profile is a pane profile.
+  delete profile["mode"];
   if (typeof profile["adapter"] === "string") return profile as unknown as AgentProfile;
 
   const runner = profile["runner"];
@@ -77,7 +62,7 @@ export function migrateProfile(raw: unknown): AgentProfile | null {
   return {
     ...(rest as Record<string, unknown>),
     adapter: "claude_code",
-    mode: "pane",
+    provider: "anthropic",
     worktree: false,
   } as unknown as AgentProfile;
 }
@@ -90,19 +75,22 @@ export function normalizeConfig(raw: unknown): KonductorConfig {
         profiles?: AgentProfile[];
         prompt_packs?: PromptPack[];
         skill_profiles?: SkillProfile[];
+        provider_connections?: ProviderConnection[];
         tasks?: Array<{ id: string; run_id: string; status: "running" | "succeeded" | "failed" | "stopped"; started_at: string }>;
       }
     | null;
 
-  const fallbackProfile = defaultClaudeProfile();
   const migrated = (existingAgents?.profiles ?? [])
     .map(migrateProfile)
     .filter((profile): profile is AgentProfile => profile !== null);
-  const profiles = migrated.length > 0 ? migrated : [fallbackProfile];
+  // Do not invent a vendor-specific harness for an unconfigured project. New
+  // projects are seeded from locally available adapters by `konductor init`.
+  const profiles = migrated;
   const promptPacks = existingAgents?.prompt_packs?.length
     ? existingAgents.prompt_packs
     : [defaultPromptPack()];
   const skillProfiles = existingAgents?.skill_profiles ?? [];
+  const providerConnections = existingAgents?.provider_connections ?? [];
 
   const normalized: KonductorConfig = {
     schema_version: "0.3.0",
@@ -131,13 +119,16 @@ export function normalizeConfig(raw: unknown): KonductorConfig {
       // A default pointing at a dropped profile would fail every launch.
       default_profile: profiles.some((p) => p.id === existingAgents?.default_profile)
         ? existingAgents!.default_profile!
-        : (profiles[0]?.id ?? fallbackProfile.id),
+        : (profiles[0]?.id ?? ""),
       profiles,
       prompt_packs: promptPacks,
       skill_profiles: skillProfiles,
+      provider_connections: providerConnections,
       tasks: existingAgents?.tasks,
     },
     agent: data["agent"] as KonductorConfig["agent"],
+    assets: data["assets"] as KonductorConfig["assets"],
+    preview: data["preview"] as KonductorConfig["preview"],
   };
 
   return KonductorConfigSchema.parse(normalized);
@@ -175,12 +166,6 @@ export async function ensureProjectMcpConfig(cwd: string): Promise<boolean> {
         type: "stdio",
         command: "konductor",
         args: ["mcp", "serve"],
-        env: {
-          KONDUCTOR_RUN_ID: "${KONDUCTOR_RUN_ID:-}",
-          KONDUCTOR_PROFILE_ID: "${KONDUCTOR_PROFILE_ID:-}",
-          KONDUCTOR_FEATURE_ITEM_ID: "${KONDUCTOR_FEATURE_ITEM_ID:-}",
-          KONDUCTOR_RUN_SOURCE: "${KONDUCTOR_RUN_SOURCE:-cli}",
-        },
       },
     },
   };

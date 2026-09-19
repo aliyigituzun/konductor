@@ -7,9 +7,7 @@ import type { ServerWebSocket } from "bun";
 import type {
   AgentAdapterManifest,
   AgentHandle,
-  AgentMode,
   AgentProfile,
-  AgentStatus,
   PromptPack,
   RunSummary,
 } from "@konductor/schema";
@@ -17,13 +15,19 @@ import {
   DEFAULT_OTEL_ENV,
   appendRunLog,
   appendUpdate,
-  ensureProjectMcpConfig,
   getProject,
   hostGlobal,
   importantProjectPaths,
+  incrementRunCounters,
+  ensureInternalProfileToken,
+  isAuthenticationRequired,
+  resolveAuthSession,
+  listGlobalRuns,
+  listPreviews,
   listProjectRuns,
   patchRunSummary,
   readConfig,
+  readProviderSecret,
   readGlobalRunSummary,
   readRunLog,
   readStatus,
@@ -32,17 +36,24 @@ import {
   writeRunLog,
   writeRunSummary,
 } from "@konductor/store";
-import { createApiRouter } from "@konductor/api";
+import { SESSION_COOKIE, createApiRouter, readCookie } from "@konductor/api";
+import { composePrompt } from "./prompt.js";
+import { HostApiError } from "./errors.js";
+import { createPreviewManager, type StartPreviewRequest } from "./previews.js";
+import { proxyPreviewRequest, type PreviewSocketData, previewSocketHandlers } from "./preview-proxy.js";
 import {
-  HeadlessTransport,
   TmuxTransport,
+  adapterCatalog,
   buildArgv,
+  buildHarnessEnv,
   ensureWorktree,
-  detectAdapter,
-  loadAdapters,
   resolveAdapter,
+  resolveModel,
   uniqueSlug,
-  type AgentTransport,
+  classifyScreen,
+  adapterRuntime,
+  adapterSetupDir,
+  resolveAdapterBinary,
 } from "@konductor/agents";
 
 type LaunchRunRequest = {
@@ -50,32 +61,30 @@ type LaunchRunRequest = {
   prompt: string;
   prompt_packs?: string[];
   feature_item_id?: string | null;
+  /** To-do whose linked feature and asset context is part of this hand-off. */
+  todo_id?: string | null;
+  /** Resolved decision this run carries out; the host adds its outcome to the brief. */
+  decision_id?: string | null;
   source?: "dashboard" | "cli";
-  /** Preferred name for the agent; a suffix is added if it is taken. */
   slug?: string;
-  /** Override the profile's pane/headless mode for this run. */
-  mode?: AgentMode;
-  /** Override the profile's worktree isolation for this run. */
+  /** Override the profile's provider and model for this run. */
+  provider?: string;
+  model?: string;
   worktree?: boolean;
 };
 
-type TerminalSocketData = { runId: string };
+type TerminalSocketData = { kind: "terminal"; runId: string };
+type SocketData = TerminalSocketData | PreviewSocketData;
 
-/**
- * A live agent the host is supervising.
- *
- * Both transports produce one of these, so nothing downstream — completion,
- * stopping, streaming — has to branch on how the agent is being run.
- */
+/** A live agent the host is supervising: one tmux window, polled for status. */
 type LiveAgent = {
   handle: AgentHandle;
-  transport: AgentTransport;
   manifest: AgentAdapterManifest;
   repoPath: string;
   projectId: string;
   /** Last screen sample, so the poller only emits what changed. */
   lastScreen: string;
-  /** Interval driving status classification for pane agents. */
+  /** Interval driving status classification. */
   poller: ReturnType<typeof setInterval> | null;
   /**
    * The kickoff message, held until the agent is ready to receive it.
@@ -95,45 +104,20 @@ const PORT = parseInt(process.env["KONDUCTOR_HOST_PORT"] ?? "4096", 10);
 const HOSTNAME = process.env["KONDUCTOR_HOST_HOSTNAME"] ?? "127.0.0.1";
 const HOST_ID = process.env["KONDUCTOR_HOST_ID"] ?? "local-host";
 const agents = new Map<string, LiveAgent>();
-const tmuxTransport = new TmuxTransport();
-const headlessTransport = new HeadlessTransport();
-/** How often a pane agent's screen is sampled and reclassified. */
+const tmux = new TmuxTransport();
+const HOST_IDLE_TIMEOUT_MS = 15 * 60 * 1000;
+let idleShutdownTimer: ReturnType<typeof setTimeout> | null = null;
+/** How often an agent's screen is sampled and reclassified. */
 const POLL_INTERVAL_MS = 1200;
 /**
- * How long to wait for a pane agent to reach its input box before giving up on
+ * How long to wait for an agent to reach its input box before giving up on
  * handing it the task. Generous, because the agent may be sitting on a prompt only
  * the operator can answer.
  */
 const KICKOFF_TIMEOUT_MS = 5 * 60 * 1000;
-const sockets = new Map<string, Set<ServerWebSocket<TerminalSocketData>>>();
+const sockets = new Map<string, Set<ServerWebSocket<SocketData>>>();
+const previewManager = createPreviewManager({ hostPort: PORT, onChange: () => scheduleIdleShutdown() });
 const stopRequested = new Set<string>();
-
-class HostApiError extends Error {
-  status: number;
-  code: string;
-  hint: string | null;
-  details: string[];
-  run_id: string | null;
-
-  constructor(
-    message: string,
-    options: {
-      status?: number;
-      code?: string;
-      hint?: string | null;
-      details?: string[];
-      run_id?: string | null;
-    } = {},
-  ) {
-    super(message);
-    this.name = "HostApiError";
-    this.status = options.status ?? 400;
-    this.code = options.code ?? "HOST_ERROR";
-    this.hint = options.hint ?? null;
-    this.details = options.details ?? [];
-    this.run_id = options.run_id ?? null;
-  }
-}
 
 // Only a browser page served from loopback may call the host. Anything else gets no
 // CORS headers, so the browser blocks it.
@@ -228,6 +212,7 @@ function startupLog(
     `[konductor host] Run ID: ${run.id}`,
     `[konductor host] Project: ${run.project_id}`,
     `[konductor host] Profile: ${run.profile_id} (${run.profile_title})`,
+    `[konductor host] Harness: ${run.adapter_id} · ${run.provider ?? "default provider"} · ${run.model ?? "default model"}`,
     `[konductor host] Source: ${run.source}`,
     `[konductor host] Working directory: ${run.working_directory ?? run.repo_path}`,
     `[konductor host] Feature: ${run.feature_item_title ?? run.feature_item_id ?? "direct task"}`,
@@ -255,122 +240,6 @@ function commandSummary(argv: string[]): string {
   return argv.map(shellQuote).join(" ");
 }
 
-async function composePrompt(
-  repoPath: string,
-  prompt: string,
-  packs: PromptPack[],
-  featureItemId: string | null | undefined,
-  runId: string,
-  profile: AgentProfile,
-  agentTitle: string,
-  source: "dashboard" | "cli",
-  mcpEnabled: boolean,
-): Promise<{ text: string; feature_item_title: string | null }> {
-  const featureContext = await resolveFeatureContext(repoPath, featureItemId);
-  const packBlocks = await Promise.all(
-    packs.map(async (pack) => {
-      const refs = await fileRefBlock(repoPath, pack);
-      return [
-        `## Prompt Pack: ${pack.title}`,
-        pack.instructions,
-        pack.mcp_reminder ?? null,
-        refs || null,
-      ]
-        .filter(Boolean)
-        .join("\n\n");
-    }),
-  );
-
-  const text = [
-    `You are running inside a Konductor-managed ${agentTitle} session.`,
-    featureContext.feature_block || null,
-    ...packBlocks,
-    "## Required Workflow",
-    "1. Inspect the relevant code and understand the task before editing files.",
-    mcpEnabled
-      ? "2. Konductor MCP is expected to be available here. Start by calling get_run_context, get_project_context, and get_current_status."
-      : "2. Konductor MCP may not be available. If you cannot use it, say so clearly in your updates and final output.",
-    "3. Use write_update after repository inspection, after meaningful implementation steps, and whenever you hit a blocker, permission issue, or scope change.",
-    featureItemId
-      ? "4. If you complete or materially change the selected feature, call write_status before you finish so the dashboard reflects the outcome."
-      : "4. If your work changes project state in a meaningful way, call write_status before you finish so the dashboard reflects the outcome.",
-    "5. Do not report success unless the code changes actually landed and you either wrote status through MCP or explicitly explain why you could not.",
-    "## Operator Prompt",
-    prompt,
-    "## Konductor Run Metadata",
-    `run_id: ${runId}`,
-    `profile_id: ${profile.id}`,
-    `source: ${source}`,
-    featureItemId ? `feature_item_id: ${featureItemId}` : null,
-    "If the Konductor MCP server is available, use it to read project context, write incremental updates, and persist status updates with this run context.",
-  ]
-    .filter(Boolean)
-    .join("\n\n");
-
-  return {
-    text,
-    feature_item_title: featureContext.feature_item_title,
-  };
-}
-
-async function fileRefBlock(repoPath: string, pack: PromptPack): Promise<string> {
-  if (pack.file_refs.length === 0) return "";
-  const parts: string[] = [];
-  for (const fileRef of pack.file_refs) {
-    const filePath = join(repoPath, fileRef);
-    if (!existsSync(filePath)) continue;
-    try {
-      const content = await readFile(filePath, "utf-8");
-      parts.push(`## File Reference: ${fileRef}\n${content}`);
-    } catch {
-      // Best effort only.
-    }
-  }
-  return parts.join("\n\n");
-}
-
-async function resolveFeatureContext(repoPath: string, featureItemId: string | null | undefined): Promise<{
-  feature_item_title: string | null;
-  feature_block: string;
-}> {
-  if (!featureItemId) {
-    return { feature_item_title: null, feature_block: "" };
-  }
-
-  const snap = await readStatus(repoPath);
-  const feature =
-    snap?.features
-      ?.flatMap((category) =>
-        category.items.map((item) => ({
-          category_id: category.id,
-          category_title: category.title,
-          ...item,
-        })),
-      )
-      .find((item) => item.id === featureItemId) ?? null;
-
-  if (!feature) {
-    return {
-      feature_item_title: null,
-      feature_block: `## Selected Feature Item\nFeature item \`${featureItemId}\` was selected, but it was not found in the latest status snapshot.`,
-    };
-  }
-
-  return {
-    feature_item_title: feature.title,
-    feature_block: [
-      "## Selected Feature Item",
-      `ID: ${feature.id}`,
-      `Category: ${feature.category_title}`,
-      `Title: ${feature.title}`,
-      `Status: ${feature.status}`,
-      feature.description ? `Description: ${feature.description}` : null,
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  };
-}
-
 async function syncProjectRegistry(repoPath: string, projectId: string, defaultProfile: string): Promise<void> {
   const entry = await getProject(projectId);
   if (!entry) return;
@@ -392,28 +261,12 @@ function emitTerminal(runId: string, payload: unknown): void {
   }
 }
 
-async function appendTerminalChunk(repoPath: string, run: RunSummary, chunk: string, stream: "stdout" | "stderr"): Promise<void> {
-  const prefix = stream === "stderr" ? "[stderr] " : "";
-  const nextChunk = chunk
-    .split("\n")
-    .map((line, index, all) => {
-      if (line.length === 0 && index === all.length - 1) return "";
-      return `${prefix}${line}`;
-    })
-    .join("\n");
-  await appendRunLog(repoPath, run.id, nextChunk);
-  const current = await listProjectRunById(run.id);
-  const nextPreview = excerpt(`${current?.terminal_preview ?? run.terminal_preview}${nextChunk}`, 240);
-  await patchRunSummary(repoPath, run.id, { terminal_preview: nextPreview });
-  emitTerminal(run.id, { type: "chunk", chunk: nextChunk });
-}
-
 /**
  * The single completion path.
  *
- * Both transports land here — the pane poller when its process exits, the headless
- * transport from its onExit callback — so the "succeeded but never wrote status"
- * warning and the registry sync happen exactly once, for every kind of agent.
+ * The poller lands here when an agent's process exits, and startup recovery lands
+ * here for agents whose window vanished while the host was down, so the "succeeded
+ * but never wrote status" warning and the registry sync happen exactly once.
  */
 async function finalizeRun(runId: string, repoPath: string, exitCode: number | null): Promise<void> {
   const current = await listProjectRunById(runId);
@@ -458,6 +311,8 @@ async function finalizeRun(runId: string, repoPath: string, exitCode: number | n
   );
   await appendUpdate(repoPath, {
     kind: "milestone",
+    subject: "agent",
+    action: updated.status === "succeeded" ? "success" : "failure",
     message:
       updated.status === "succeeded"
         ? `${agentLabelFromRun(updated)} agent "${updated.slug}" completed successfully.`
@@ -479,6 +334,8 @@ async function finalizeRun(runId: string, repoPath: string, exitCode: number | n
     );
     await appendUpdate(repoPath, {
       kind: "milestone",
+      subject: "agent",
+      action: "success",
       message:
         `${agentLabelFromRun(updated)} run ${runId} exited successfully but did not write a Konductor status snapshot. ` +
         "Code may have changed while dashboard tracking stayed stale.",
@@ -492,9 +349,7 @@ async function finalizeRun(runId: string, repoPath: string, exitCode: number | n
     hostUpdates += 1;
   }
 
-  await patchRunSummary(repoPath, runId, {
-    update_count: updated.update_count + hostUpdates,
-  });
+  await incrementRunCounters(repoPath, runId, { updates: hostUpdates });
   await syncProjectRegistry(repoPath, updated.project_id, updated.profile_id);
   emitTerminal(runId, { type: "status", status: updated.status, exit_code: exitCode });
   releaseAgent(runId);
@@ -503,31 +358,26 @@ async function finalizeRun(runId: string, repoPath: string, exitCode: number | n
 /** Drop a finished agent from the fleet, stopping its poller first. */
 function releaseAgent(runId: string): void {
   stopPolling(runId);
-  if (agents.get(runId)?.transport === headlessTransport) headlessTransport.forget(runId);
   agents.delete(runId);
+  scheduleIdleShutdown();
 }
 
-async function pumpStream(
-  runId: string,
-  repoPath: string,
-  run: RunSummary,
-  stream: ReadableStream<Uint8Array> | null,
-  label: "stdout" | "stderr",
-): Promise<void> {
-  if (!stream) return;
-  const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value);
-    if (!chunk) continue;
-    await appendTerminalChunk(repoPath, run, chunk, label);
+/** Keep a manually or automatically started host around briefly between tasks. */
+function scheduleIdleShutdown(): void {
+  if (idleShutdownTimer) clearTimeout(idleShutdownTimer);
+  // A live preview keeps the host up too: its ready/liveness polling has no other home.
+  if (agents.size > 0 || previewManager.liveCount() > 0) {
+    idleShutdownTimer = null;
+    return;
   }
+  idleShutdownTimer = setTimeout(() => {
+    idleShutdownTimer = null;
+    if (agents.size === 0 && previewManager.liveCount() === 0) void shutdownHost();
+  }, HOST_IDLE_TIMEOUT_MS);
 }
 
 /**
- * Hand a pane agent its task through a file.
+ * Hand an agent its task through a file.
  *
  * A newline sent to an agent TUI submits the input box early, cutting the prompt in
  * half, so the composed prompt never travels over send-keys. The agent gets a
@@ -569,7 +419,7 @@ export function findAgentBySlug(slug: string): LiveAgent | null {
 }
 
 /**
- * Sample a pane agent's screen on an interval: push what changed to any dashboard
+ * Sample an agent's screen on an interval: push what changed to any dashboard
  * watching, keep a short preview on the run summary, and finalize the run once the
  * pane's process exits.
  *
@@ -586,7 +436,7 @@ function startPolling(runId: string): void {
       const live = agents.get(runId);
       if (!live) return;
       try {
-        const screen = await live.transport.read(live.handle, { source: "visible" });
+        const screen = await tmux.read(live.handle, { source: "visible" });
         if (screen !== live.lastScreen) {
           live.lastScreen = screen;
           emitTerminal(runId, { type: "screen", screen });
@@ -595,23 +445,36 @@ function startPolling(runId: string): void {
           });
         }
 
-        const classification = await live.transport.status(live.handle, live.manifest);
+        const classification = await tmux.status(live.handle, live.manifest);
 
         if (live.pendingKickoff) {
-          if (classification.status === "idle") {
+          // Readiness is different from status: a TUI can redraw or blink while its
+          // input box is already available, which the classifier reports as "working".
+          const inputReady = classifyScreen(live.manifest, {
+            screen,
+            alive: true,
+            changed: false,
+          }).status === "idle";
+          if (inputReady) {
             const kickoff = live.pendingKickoff;
             live.pendingKickoff = null;
-            await live.transport.send(live.handle, kickoff);
-            await live.transport.submit(live.handle, live.manifest);
+            await tmux.send(live.handle, kickoff);
+            await tmux.submit(live.handle, live.manifest);
             await appendRunLog(live.repoPath, runId, `[konductor host] Sent kickoff: ${kickoff}\n`);
+            await patchRunSummary(live.repoPath, runId, { bootstrap_state: "task_sent", bootstrap_reason: null });
           } else if (Date.now() > live.kickoffDeadline) {
-            live.pendingKickoff = null;
             await appendRunLog(
               live.repoPath,
               runId,
-              "[konductor host] Gave up waiting for the agent's input box; the task was " +
-                "never sent. Attach to the pane to see what it is showing.\n",
+              "[konductor host] Task delivery is waiting for an operator response to the visible dialog.\n",
             );
+            // Keep the task queued. Clearing it here created a live run that could never
+            // receive its task after a first-run trust or permission dialog was resolved.
+            await patchRunSummary(live.repoPath, runId, {
+              bootstrap_state: "awaiting_operator",
+              bootstrap_reason: classification.reason,
+            });
+            live.kickoffDeadline = Number.POSITIVE_INFINITY;
           }
         }
 
@@ -699,25 +562,61 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
   }
 
   const label = agentLabel(profile, manifest);
-  const mode: AgentMode = body.mode ?? profile.mode;
   const binary = profile.binary ?? manifest.binary;
+  const resolvedBinary = profile.binary ? Bun.which(profile.binary) : resolveAdapterBinary(manifest);
 
-  if (!Bun.which(binary)) {
-    throw new HostApiError(`${label} binary not found on PATH: ${binary}`, {
+  if (!resolvedBinary) {
+    throw new HostApiError(`${label} binary is not installed: ${binary}`, {
       status: 400,
       code: "AGENT_BINARY_NOT_FOUND",
-      hint: `Install ${manifest.title}${manifest.homepage ? ` (${manifest.homepage})` : ""}, or set "binary" on the profile.`,
+      hint: `Run \`konductor adapters setup ${manifest.id}\`, or set "binary" on the profile.`,
       details: [`Configured binary: ${binary}`, `Adapter: ${manifest.id}`],
     });
   }
 
-  if (mode === "pane" && !(await TmuxTransport.available())) {
-    throw new HostApiError("tmux is required to run an agent in a pane.", {
+  if (!(await TmuxTransport.available())) {
+    throw new HostApiError("tmux is required to run agents.", {
       status: 400,
       code: "TMUX_NOT_AVAILABLE",
-      hint: 'Install tmux (`brew install tmux`), or set the profile mode to "headless".',
+      hint: "Install tmux (`brew install tmux`) and try again.",
     });
   }
+
+  // The harness decides which providers it can reach; a profile that names another
+  // is a misconfiguration, not something to paper over with a default.
+  let selection: ReturnType<typeof resolveModel>;
+  try {
+    selection = resolveModel(manifest, profile, { provider: body.provider, model: body.model });
+  } catch (error) {
+    throw new HostApiError(error instanceof Error ? error.message : String(error), {
+      status: 400,
+      code: "MODEL_NOT_SUPPORTED",
+      hint: `Edit the "${profile.title}" profile's provider and model in the agent configuration.`,
+      details: [
+        `Adapter: ${manifest.id}`,
+        `Supported providers: ${manifest.providers.map((item) => item.id).join(", ")}`,
+      ],
+    });
+  }
+
+  // A saved connection is opt-in: it must name this provider and explicitly list
+  // this harness. Its key is read from host-only storage just before launch.
+  const providerConnections = config.agents.provider_connections ?? [];
+  const providerConnection = profile.provider_connection_id
+    ? providerConnections.find((connection) => connection.id === profile.provider_connection_id) ?? null
+    : providerConnections.find((connection) =>
+      connection.enabled && connection.provider === selection.provider.id && connection.compatible_adapters.includes(manifest.id),
+    ) ?? null;
+  if (profile.provider_connection_id && (!providerConnection || !providerConnection.enabled ||
+    providerConnection.provider !== selection.provider.id || !providerConnection.compatible_adapters.includes(manifest.id))) {
+    throw new HostApiError(`Provider connection "${profile.provider_connection_id}" is not compatible with ${label}.`, {
+      code: "PROFILE_PROVIDER_CONNECTION_INVALID",
+      hint: "Edit the profile's provider connection or its harness/provider selection.",
+    });
+  }
+  const providerSecret = providerConnection
+    ? await readProviderSecret(projectId, providerConnection.id)
+    : null;
 
   const runId = randomUUID();
   const source = body.source ?? "dashboard";
@@ -742,15 +641,25 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
   }
 
   const mcpEnabled = profile.default_mcp !== false && manifest.mcp.kind !== "none";
+  let runtime: Awaited<ReturnType<typeof adapterRuntime>> = {
+    binary: resolvedBinary,
+    args: [],
+    env: {},
+  };
   let mcpStatus = "disabled by profile";
   if (profile.default_mcp !== false && manifest.mcp.kind === "none") {
     mcpStatus = `unsupported by the ${manifest.title} adapter`;
-  } else if (mcpEnabled && manifest.mcp.kind === "mcp_json") {
-    const wroteMcp = await ensureProjectMcpConfig(repoPath);
-    mcpStatus = wroteMcp ? "enabled, wrote .mcp.json" : "enabled, using existing .mcp.json";
   } else if (mcpEnabled) {
-    // The adapter keeps MCP servers somewhere Konductor does not manage yet.
-    mcpStatus = `enabled, expects Konductor MCP in the ${manifest.mcp.kind} config`;
+    try {
+      runtime = await adapterRuntime(manifest);
+      mcpStatus = `enabled from ${adapterSetupDir(manifest)}`;
+    } catch (error) {
+      throw new HostApiError(error instanceof Error ? error.message : String(error), {
+        status: 400,
+        code: "ADAPTER_SETUP_REQUIRED",
+        hint: `Run \`konductor adapters setup ${manifest.id}\`, then launch again.`,
+      });
+    }
   }
 
   const promptPayload = await composePrompt(
@@ -758,7 +667,10 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     body.prompt,
     packs,
     body.feature_item_id,
+    body.todo_id,
+    body.decision_id,
     runId,
+    projectId,
     profile,
     label,
     source,
@@ -788,32 +700,36 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
   const workingDirectory =
     worktreePath ?? (profile.default_working_dir === "current" ? process.cwd() : repoPath);
 
+  // Every host-launched profile has one stable, Konductor-managed identity. The
+  // cleartext credential lives in the protected host secret directory; run records
+  // receive only a redacted environment summary.
+  const internalToken = await ensureInternalProfileToken(projectId, profile.id, profile.title);
+
   const envSummaryInput: Record<string, string | undefined> = {
     KONDUCTOR_RUN_ID: runId,
     KONDUCTOR_PROFILE_ID: profile.id,
     KONDUCTOR_AGENT_SLUG: slug,
     KONDUCTOR_FEATURE_ITEM_ID: body.feature_item_id ?? undefined,
+    KONDUCTOR_TODO_ID: body.todo_id ?? undefined,
+    KONDUCTOR_DECISION_ID: body.decision_id ?? undefined,
     KONDUCTOR_RUN_SOURCE: source,
+    KONDUCTOR_ACCESS_TOKEN: internalToken.token,
+    ...(providerConnection ? { KONDUCTOR_PROVIDER_ENDPOINT: providerConnection.endpoint } : {}),
+    ...(providerConnection?.auth_env && providerSecret ? { [providerConnection.auth_env]: providerSecret } : {}),
     ...(manifest.telemetry.kind === "otel_env" ? DEFAULT_OTEL_ENV : {}),
     ...profile.default_env,
+    ...runtime.env,
   };
 
-  // A pane agent is launched bare and told where its brief is; a headless agent gets
-  // the whole prompt in argv because it has no input box to type into.
-  const taskFile =
-    mode === "pane" ? await writeTaskFile(workingDirectory, runId, promptPayload.text) : null;
-  let argv: string[];
-  try {
-    argv = buildArgv(manifest, profile, mode, {
-      prompt: mode === "headless" ? promptPayload.text : undefined,
-      task_file: taskFile ?? undefined,
-    });
-  } catch (error) {
-    throw new HostApiError(error instanceof Error ? error.message : String(error), {
-      status: 400,
-      code: "ADAPTER_INVOCATION_INVALID",
-    });
-  }
+  // The agent is launched bare and told where its brief is once its input box is
+  // up; the composed prompt never travels over argv or send-keys.
+  const taskFile = await writeTaskFile(workingDirectory, runId, promptPayload.text);
+  const runtimeManifest = runtime.binary ? { ...manifest, binary: runtime.binary } : manifest;
+  const argv = buildArgv(runtimeManifest, profile, {
+    provider: selection.provider.id,
+    model: selection.argument ?? undefined,
+    task_file: taskFile,
+  }, runtime.args);
 
   const session = config.host?.tmux_session ?? "konductor";
   const summary: RunSummary = {
@@ -825,14 +741,19 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     profile_title: profile.title,
     adapter_id: manifest.id,
     slug,
-    transport: mode === "pane" ? "tmux" : "headless",
-    session_name: mode === "pane" ? session : null,
+    provider: selection.provider.id,
+    model: selection.model,
+    transport: "tmux",
+    session_name: session,
+    window_id: null,
     pane_id: null,
     agent_status: "starting",
     worktree_path: worktreePath,
     branch,
     feature_item_id: body.feature_item_id ?? null,
+    todo_id: body.todo_id ?? null,
     feature_item_title: promptPayload.feature_item_title,
+    decision_id: body.decision_id ?? null,
     prompt_excerpt: excerpt(body.prompt, 220),
     prompt_packs: packs.map((pack) => pack.id),
     source,
@@ -850,12 +771,16 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     last_status_at: null,
     last_error: null,
     terminal_preview: "",
+    bootstrap_state: "starting",
+    bootstrap_reason: null,
   };
 
   await writeRunSummary(repoPath, summary);
   await writeRunLog(repoPath, runId, startupLog(summary, body.prompt, packs, mcpStatus));
   await appendUpdate(repoPath, {
     kind: "milestone",
+    subject: "agent",
+    action: "created",
     message: `Queued ${label} agent "${slug}"${promptPayload.feature_item_title ? ` for feature "${promptPayload.feature_item_title}"` : ""}.`,
     agent: "konductor-host",
     run_id: runId,
@@ -864,32 +789,21 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     source,
     task_state: "started",
   });
-  await patchRunSummary(repoPath, runId, { update_count: 1 });
+  await incrementRunCounters(repoPath, runId, { updates: 1 });
 
-  const env = { ...process.env, ...envSummaryInput } as Record<string, string>;
-  const transport: AgentTransport = mode === "pane" ? tmuxTransport : headlessTransport;
+  const env = buildHarnessEnv(manifest, process.env, envSummaryInput);
 
   let handle: AgentHandle;
   try {
-    handle = await transport.start(
-      {
-        slug,
-        run_id: runId,
-        manifest,
-        command: argv,
-        cwd: workingDirectory,
-        env,
-        session,
-      },
-      {
-        onChunk: (chunk) => {
-          void appendTerminalChunk(repoPath, summary, chunk, "stdout");
-        },
-        onExit: (code) => {
-          void finalizeRun(runId, repoPath, code);
-        },
-      },
-    );
+    handle = await tmux.start({
+      slug,
+      run_id: runId,
+      manifest,
+      command: argv,
+      cwd: workingDirectory,
+      env,
+      session,
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const failed = await patchRunSummary(repoPath, runId, {
@@ -902,6 +816,8 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     await appendRunLog(repoPath, runId, `[konductor host] Failed to start ${label}: ${message}\n`);
     await appendUpdate(repoPath, {
       kind: "milestone",
+      subject: "agent",
+      action: "failure",
       message: `${label} agent "${slug}" failed before launch: ${message}.`,
       agent: "konductor-host",
       run_id: runId,
@@ -911,13 +827,13 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
       task_state: "failed",
     });
     if (failed) {
-      await patchRunSummary(repoPath, runId, { update_count: failed.update_count + 1 });
+      await incrementRunCounters(repoPath, runId, { updates: 1 });
     }
     await syncProjectRegistry(repoPath, projectId, profile.id);
     throw new HostApiError(`${label} could not be started.`, {
       status: 500,
       code: "AGENT_LAUNCH_FAILED",
-      hint: `Inspect ${summary.log_path} or the dashboard terminal panel for the launch trace.`,
+      hint: `Inspect ${summary.log_path}, or use \`konductor agent read ${slug}\` for the launch trace.`,
       details: [
         `Run ID: ${runId}`,
         `Working directory: ${workingDirectory}`,
@@ -928,41 +844,116 @@ async function launchRun(projectId: string, body: LaunchRunRequest): Promise<Run
     });
   }
 
+  if (idleShutdownTimer) {
+    clearTimeout(idleShutdownTimer);
+    idleShutdownTimer = null;
+  }
   agents.set(runId, {
     handle,
-    transport,
     manifest,
     repoPath,
     projectId,
     lastScreen: "",
     poller: null,
-    pendingKickoff: null,
-    kickoffDeadline: 0,
+    pendingKickoff: kickoffMessage(taskFile, workingDirectory),
+    kickoffDeadline: Date.now() + KICKOFF_TIMEOUT_MS,
   });
 
   const runningSummary =
     (await patchRunSummary(repoPath, runId, {
       status: "running",
-      agent_status: mode === "pane" ? "starting" : "working",
+      agent_status: "starting",
       pane_id: handle.pane_id,
+      window_id: handle.window_id,
       session_name: handle.session_name,
     })) ?? summary;
 
-  await appendRunLog(repoPath, runId, `[konductor host] ${label} started (${mode}).\n`);
+  await appendRunLog(
+    repoPath,
+    runId,
+    `[konductor host] ${label} started in tmux window ${handle.window_id} (pane ${handle.pane_id}).\n` +
+      `[konductor host] Attach: ${tmux.attachCommand(handle)}\n`,
+  );
+  await appendUpdate(repoPath, {
+    kind: "brief",
+    subject: "agent",
+    action: "edited",
+    message: `${label} agent "${slug}" started.`,
+    agent: "konductor-host",
+    run_id: runId,
+    profile_id: profile.id,
+    feature_item_id: body.feature_item_id ?? null,
+    source,
+  });
+  await incrementRunCounters(repoPath, runId, { updates: 1 });
 
-  if (mode === "pane" && taskFile) {
-    const live = agents.get(runId);
-    if (live) {
-      live.pendingKickoff = kickoffMessage(taskFile, workingDirectory);
-      live.kickoffDeadline = Date.now() + KICKOFF_TIMEOUT_MS;
-    }
-    // Give the TUI a moment to draw before the first sample, so the very first
-    // classification is not made against a blank screen.
-    setTimeout(() => startPolling(runId), manifest.ready_delay_ms);
-  }
+  // Give the TUI a moment to draw before the first sample, so the very first
+  // classification is not made against a blank screen.
+  setTimeout(() => startPolling(runId), manifest.ready_delay_ms);
 
   await syncProjectRegistry(repoPath, projectId, profile.id);
   return runningSummary;
+}
+
+/**
+ * Pick up agents that outlived a host restart.
+ *
+ * Their tmux windows carried on without us, so a run the store still calls
+ * "running" is either alive — re-adopt it and resume polling — or its window is
+ * gone, in which case it is finalized without an exit code rather than left as a
+ * ghost that never completes. Kickoff is not re-sent: the brief was either already
+ * delivered or timed out on the previous host, and repeating it would confuse an
+ * agent mid-task.
+ */
+async function adoptSurvivingAgents(): Promise<void> {
+  const runs = (await listGlobalRuns()).filter(
+    (run) => run.status === "running" || run.status === "queued",
+  );
+  if (runs.length === 0) return;
+
+  const tmuxUp = await TmuxTransport.available();
+  for (const run of runs) {
+    if (run.transport !== "tmux" || !run.pane_id || !run.window_id || !run.session_name) {
+      await appendRunLog(run.repo_path, run.id, "[konductor host] Run had no live pane to recover after a host restart.\n");
+      await finalizeRun(run.id, run.repo_path, null);
+      continue;
+    }
+
+    const handle: AgentHandle = {
+      slug: run.slug,
+      run_id: run.id,
+      session_name: run.session_name,
+      window_id: run.window_id,
+      pane_id: run.pane_id,
+    };
+
+    let manifest: AgentAdapterManifest | null = null;
+    try {
+      manifest = await resolveAdapter(run.adapter_id, run.repo_path);
+    } catch {
+      // Adapter removed while the host was down; the agent may still be running but
+      // nothing here can classify it, so it is reported as lost.
+    }
+
+    if (!tmuxUp || !manifest || !(await tmux.alive(handle))) {
+      await appendRunLog(run.repo_path, run.id, "[konductor host] Agent's tmux window was gone when the host restarted.\n");
+      await finalizeRun(run.id, run.repo_path, null);
+      continue;
+    }
+
+    agents.set(run.id, {
+      handle,
+      manifest,
+      repoPath: run.repo_path,
+      projectId: run.project_id,
+      lastScreen: "",
+      poller: null,
+      pendingKickoff: null,
+      kickoffDeadline: 0,
+    });
+    await appendRunLog(run.repo_path, run.id, "[konductor host] Re-adopted after a host restart.\n");
+    startPolling(run.id);
+  }
 }
 
 /** The one-line pointer to the brief that starts a pane agent working. */
@@ -984,8 +975,8 @@ async function sendToAgent(slug: string, text: string): Promise<{ slug: string; 
     });
   }
   try {
-    await agent.transport.send(agent.handle, text);
-    await agent.transport.submit(agent.handle, agent.manifest);
+    await tmux.send(agent.handle, text);
+    await tmux.submit(agent.handle, agent.manifest);
   } catch (error) {
     throw new HostApiError(error instanceof Error ? error.message : String(error), {
       status: 400,
@@ -994,6 +985,24 @@ async function sendToAgent(slug: string, text: string): Promise<{ slug: string; 
   }
   await appendRunLog(agent.repoPath, agent.handle.run_id, `[konductor host] Operator sent: ${text}\n`);
   return { slug, sent: text };
+}
+
+/**
+ * Respond to a currently visible non-benign dialog. This endpoint deliberately has
+ * only two fixed operations: accept the harness's highlighted choice or cancel.
+ * It never reads arbitrary key sequences from the client and never auto-responds.
+ */
+async function respondToBlockedAgent(slug: string, action: "accept" | "cancel"): Promise<{ slug: string; action: string }> {
+  const agent = findAgentBySlug(slug);
+  if (!agent) throw new HostApiError(`No live agent named "${slug}".`, { status: 404, code: "AGENT_NOT_FOUND" });
+  const status = await tmux.status(agent.handle, agent.manifest);
+  if (status.status !== "blocked") {
+    throw new HostApiError("The agent is not waiting on a recognized dialog.", { code: "AGENT_NOT_BLOCKED" });
+  }
+  if (action === "accept") await tmux.submit(agent.handle, agent.manifest);
+  else await tmux.cancelDialog(agent.handle);
+  await appendRunLog(agent.repoPath, agent.handle.run_id, `[konductor host] Operator ${action}ed visible dialog.\n`);
+  return { slug, action };
 }
 
 async function readAgent(
@@ -1007,7 +1016,7 @@ async function readAgent(
       code: "AGENT_NOT_FOUND",
     });
   }
-  return { slug, text: await agent.transport.read(agent.handle, options) };
+  return { slug, text: await tmux.read(agent.handle, options) };
 }
 
 async function explainAgent(slug: string): Promise<unknown> {
@@ -1018,14 +1027,15 @@ async function explainAgent(slug: string): Promise<unknown> {
       code: "AGENT_NOT_FOUND",
     });
   }
-  const classification = await agent.transport.status(agent.handle, agent.manifest);
-  const screen = await agent.transport.read(agent.handle, { source: "visible" });
+  const classification = await tmux.status(agent.handle, agent.manifest);
+  const screen = await tmux.read(agent.handle, { source: "visible" });
   return {
     slug,
     run_id: agent.handle.run_id,
     adapter_id: agent.manifest.id,
-    transport: agent.handle.transport,
     pane_id: agent.handle.pane_id,
+    window_id: agent.handle.window_id,
+    attach_command: tmux.attachCommand(agent.handle),
     status: classification.status,
     reason: classification.reason,
     matched_pattern: classification.matched,
@@ -1033,46 +1043,27 @@ async function explainAgent(slug: string): Promise<unknown> {
   };
 }
 
-/** Every adapter available to a project, with whether its binary is installed. */
-async function adapterCatalog(repoPath: string | null): Promise<unknown> {
-  const registry = await loadAdapters(repoPath ?? undefined);
-  const adapters = await Promise.all(
-    registry.adapters.map(async ({ manifest, source, path }) => ({
-      id: manifest.id,
-      title: manifest.title,
-      binary: manifest.binary,
-      homepage: manifest.homepage ?? null,
-      verified: manifest.verified,
-      source,
-      // Where the manifest came from; `path` below is the resolved binary.
-      manifest_path: path,
-      modes: [manifest.interactive ? "pane" : null, manifest.headless ? "headless" : null].filter(
-        Boolean,
-      ),
-      mcp: manifest.mcp.kind,
-      telemetry: manifest.telemetry.kind,
-      ...(await detectAdapter(manifest)),
-    })),
-  );
-  return { adapters, issues: registry.issues };
-}
-
 /** The fleet: every agent this host is currently supervising. */
 async function fleet(): Promise<unknown> {
   const rows = await Promise.all(
     [...agents.values()].map(async (agent) => {
-      const classification = await agent.transport.status(agent.handle, agent.manifest);
+      const classification = await tmux.status(agent.handle, agent.manifest);
       const run = await listProjectRunById(agent.handle.run_id);
       return {
         slug: agent.handle.slug,
         run_id: agent.handle.run_id,
         project_id: agent.projectId,
+        profile_id: run?.profile_id ?? null,
+        profile_title: run?.profile_title ?? null,
         adapter_id: agent.manifest.id,
         adapter_title: agent.manifest.title,
-        transport: agent.handle.transport,
+        provider: run?.provider ?? null,
+        model: run?.model ?? null,
+        transport: "tmux" as const,
         session_name: agent.handle.session_name,
+        window_id: agent.handle.window_id,
         pane_id: agent.handle.pane_id,
-        pid: agent.handle.pid,
+        attach_command: tmux.attachCommand(agent.handle),
         agent_status: classification.status,
         reason: classification.reason,
         cwd: run?.working_directory ?? null,
@@ -1138,12 +1129,13 @@ async function stopRun(runId: string): Promise<RunSummary> {
     });
   }
 
-  // Kills the tmux pane or the headless process, whichever backs this agent.
-  await running.transport.stop(running.handle);
+  await tmux.stop(running.handle);
   await appendRunLog(running.repoPath, runId, `\n[konductor host] Stop requested at ${stoppedAt}.\n`);
 
   await appendUpdate(running.repoPath, {
     kind: "milestone",
+    subject: "agent",
+    action: "deleted",
     message: `Stopped ${agentLabelFromRun(updated)} run ${runId}.`,
     agent: "konductor-host",
     run_id: runId,
@@ -1152,7 +1144,7 @@ async function stopRun(runId: string): Promise<RunSummary> {
     source: updated.source,
     task_state: "stopped",
   });
-  await patchRunSummary(running.repoPath, runId, { update_count: updated.update_count + 1 });
+  await incrementRunCounters(running.repoPath, runId, { updates: 1 });
   await syncProjectRegistry(running.repoPath, updated.project_id, updated.profile_id);
   emitTerminal(runId, { type: "status", status: "stopped" });
   releaseAgent(runId);
@@ -1161,11 +1153,26 @@ async function stopRun(runId: string): Promise<RunSummary> {
 
 async function patchRunSummaryByStopped(runId: string): Promise<RunSummary | null> {
   const hostRun = (await listProjectRunById(runId)) ?? null;
-  if (!hostRun || hostRun.status === "stopped") return hostRun;
-  return patchRunSummary(hostRun.repo_path, runId, {
+  // Only a stale live record is worth rewriting; a finished run keeps its outcome.
+  if (!hostRun || (hostRun.status !== "running" && hostRun.status !== "queued")) return hostRun;
+  const stopped = await patchRunSummary(hostRun.repo_path, runId, {
     status: "stopped",
     ended_at: new Date().toISOString(),
   });
+  await appendUpdate(hostRun.repo_path, {
+    kind: "milestone",
+    subject: "agent",
+    action: "deleted",
+    message: `Stopped ${agentLabelFromRun(hostRun)} run ${runId} (no live agent).`,
+    agent: "konductor-host",
+    run_id: runId,
+    profile_id: hostRun.profile_id,
+    feature_item_id: hostRun.feature_item_id,
+    source: hostRun.source,
+    task_state: "stopped",
+  });
+  await incrementRunCounters(hostRun.repo_path, runId, { updates: 1 });
+  return stopped;
 }
 
 async function listProjectRunById(runId: string): Promise<RunSummary | null> {
@@ -1182,10 +1189,21 @@ await writeHostState({
 
 function handleRequest(
   req: Request,
-  serverRef: Bun.Server<TerminalSocketData>,
-): Response | Promise<Response> | undefined {
+  serverRef: Bun.Server<SocketData>,
+): Response | Promise<Response | undefined> | undefined {
   {
     const url = new URL(req.url);
+
+    // Anything under /preview/:id/ is the customer's view of a running dev server.
+    const previewProxyMatch = url.pathname.match(/^\/preview\/([^/]+)(\/.*)?$/);
+    if (previewProxyMatch) {
+      return proxyPreviewRequest(req, serverRef, previewManager, {
+        id: previewProxyMatch[1]!,
+        rest: previewProxyMatch[2] ?? "/",
+        search: url.search,
+        method: req.method,
+      });
+    }
 
     if (req.method === "OPTIONS") {
       return new Response(null, {
@@ -1200,10 +1218,74 @@ function handleRequest(
     const wsMatch = url.pathname.match(/^\/runs\/([^/]+)\/stream$/);
     if (wsMatch) {
       const runId = wsMatch[1]!;
-      if (serverRef.upgrade(req, { data: { runId } })) {
-        return undefined;
+      // The terminal stream carries agent output, so it honours the dashboard's
+      // session once authentication is enabled, like the /api routes do.
+      return (async () => {
+        if (await isAuthenticationRequired() && !(await resolveAuthSession(readCookie(req, SESSION_COOKIE)))) {
+          return json({ error: "Sign in to continue.", code: "SESSION_REQUIRED" }, 401);
+        }
+        if (serverRef.upgrade(req, { data: { kind: "terminal", runId } satisfies TerminalSocketData })) {
+          return undefined;
+        }
+        return json({ error: "WebSocket upgrade failed" }, 400);
+      })();
+    }
+
+    if (req.method === "GET" && url.pathname === "/previews") {
+      return Promise.resolve()
+        .then(() => listPreviews())
+        .then((data) => json({ previews: data }))
+        .catch(jsonError);
+    }
+
+    const projectPreviewsMatch = url.pathname.match(/^\/projects\/([^/]+)\/previews$/);
+    if (projectPreviewsMatch) {
+      const projectId = decodeURIComponent(projectPreviewsMatch[1]!);
+      if (req.method === "GET") {
+        return Promise.resolve()
+          .then(() => listPreviews({ project_id: projectId }))
+          .then((data) => json({ previews: data }))
+          .catch(jsonError);
       }
-      return json({ error: "WebSocket upgrade failed" }, 400);
+      if (req.method === "POST") {
+        return Promise.resolve(req.json() as Promise<StartPreviewRequest>)
+          .then((body) => previewManager.start(projectId, body))
+          .then((preview) => json(preview, 201))
+          .catch(jsonError);
+      }
+    }
+
+    const projectBranchesMatch = url.pathname.match(/^\/projects\/([^/]+)\/branches$/);
+    if (req.method === "GET" && projectBranchesMatch) {
+      return Promise.resolve()
+        .then(() => previewManager.branches(decodeURIComponent(projectBranchesMatch[1]!)))
+        .then((data) => json({ branches: data }))
+        .catch(jsonError);
+    }
+
+    const previewStopMatch = url.pathname.match(/^\/previews\/([^/]+)\/stop$/);
+    if (req.method === "POST" && previewStopMatch) {
+      return Promise.resolve(req.text())
+        .then((text) => (text ? (JSON.parse(text) as { remove_worktree?: boolean }) : {}))
+        .then((body) => previewManager.stop(previewStopMatch[1]!, body.remove_worktree ?? false))
+        .then((data) => json(data))
+        .catch(jsonError);
+    }
+
+    const previewScreenMatch = url.pathname.match(/^\/previews\/([^/]+)\/screen$/);
+    if (req.method === "GET" && previewScreenMatch) {
+      return Promise.resolve()
+        .then(() => previewManager.screen(previewScreenMatch[1]!))
+        .then((data) => json(data))
+        .catch(jsonError);
+    }
+
+    const previewMatch = url.pathname.match(/^\/previews\/([^/]+)$/);
+    if (req.method === "GET" && previewMatch) {
+      return Promise.resolve()
+        .then(() => previewManager.get(previewMatch[1]!))
+        .then((data) => json(data))
+        .catch(jsonError);
     }
 
     if (req.method === "GET" && url.pathname === "/health") {
@@ -1213,6 +1295,7 @@ function handleRequest(
         pid: process.pid,
         port: PORT,
         running_runs: Array.from(agents.keys()),
+        running_previews: previewManager.liveCount(),
         tmux_session: [...agents.values()][0]?.handle.session_name ?? null,
       });
     }
@@ -1295,7 +1378,7 @@ function handleRequest(
 
     if (req.method === "GET" && url.pathname === "/adapters") {
       return Promise.resolve()
-        .then(() => adapterCatalog(url.searchParams.get("repo")))
+        .then(() => adapterCatalog(url.searchParams.get("repo") ?? undefined))
         .then((data) => json(data))
         .catch(jsonError);
     }
@@ -1311,6 +1394,19 @@ function handleRequest(
             });
           }
           return sendToAgent(decodeURIComponent(sendMatch[1]!), body.text);
+        })
+        .then((data) => json(data))
+        .catch(jsonError);
+    }
+
+    const respondMatch = url.pathname.match(/^\/agents\/([^/]+)\/respond$/);
+    if (req.method === "POST" && respondMatch) {
+      return Promise.resolve(req.json() as Promise<{ action?: unknown }>)
+        .then((body) => {
+          if (body.action !== "accept" && body.action !== "cancel") {
+            throw new HostApiError("Response action must be accept or cancel.", { code: "INVALID_DIALOG_ACTION" });
+          }
+          return respondToBlockedAgent(decodeURIComponent(respondMatch[1]!), body.action);
         })
         .then((data) => json(data))
         .catch(jsonError);
@@ -1421,7 +1517,7 @@ async function serveDashboard(pathname: string): Promise<Response | null> {
   return (await index.exists()) ? new Response(index) : null;
 }
 
-const server = Bun.serve<TerminalSocketData>({
+const server = Bun.serve<SocketData>({
   port: PORT,
   hostname: HOSTNAME,
   async fetch(req, serverRef) {
@@ -1432,8 +1528,12 @@ const server = Bun.serve<TerminalSocketData>({
   },
   websocket: {
     async open(socket) {
+      if (socket.data.kind === "preview") {
+        previewSocketHandlers.open(socket as ServerWebSocket<PreviewSocketData>);
+        return;
+      }
       const runId = socket.data.runId;
-      const peers = sockets.get(runId) ?? new Set<ServerWebSocket<TerminalSocketData>>();
+      const peers = sockets.get(runId) ?? new Set<ServerWebSocket<SocketData>>();
       peers.add(socket);
       sockets.set(runId, peers);
       const run = await listProjectRunById(runId);
@@ -1441,7 +1541,7 @@ const server = Bun.serve<TerminalSocketData>({
       // A pane agent's output lives on its screen, not in the log, so a fresh
       // subscriber gets the current screen alongside the lifecycle log.
       const agent = agents.get(runId);
-      const screen = agent ? await agent.transport.read(agent.handle, { source: "visible" }) : null;
+      const screen = agent ? await tmux.read(agent.handle, { source: "visible" }) : null;
       socket.send(
         JSON.stringify({
           type: "snapshot",
@@ -1451,10 +1551,15 @@ const server = Bun.serve<TerminalSocketData>({
         }),
       );
     },
-    message() {
-      // Read-only terminal stream for dashboard debugging.
+    message(socket, message) {
+      // The terminal stream is read-only; only preview sockets carry client frames upstream.
+      if (socket.data.kind === "preview") previewSocketHandlers.message(socket as ServerWebSocket<PreviewSocketData>, message);
     },
-    close(socket) {
+    close(socket, code, reason) {
+      if (socket.data.kind === "preview") {
+        previewSocketHandlers.close(socket as ServerWebSocket<PreviewSocketData>, code, reason);
+        return;
+      }
       const runId = socket.data.runId;
       const peers = sockets.get(runId);
       if (!peers) return;
@@ -1484,4 +1589,7 @@ process.on("SIGINT", () => {
   void shutdownHost();
 });
 
+await adoptSurvivingAgents();
+await previewManager.adopt();
+scheduleIdleShutdown();
 process.stderr.write(`[konductor host] listening on ${HOSTNAME}:${PORT}\n`);

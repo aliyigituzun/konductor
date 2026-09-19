@@ -5,6 +5,5 @@ export * from "./worktree.js";
 export * from "./slug.js";
 export * from "./adapters/builtin.js";
 export * from "./adapters/registry.js";
-export * from "./transport/types.js";
+export * from "./setup.js";
 export * from "./transport/tmux.js";
-export * from "./transport/headless.js";

@@ -1,16 +1,20 @@
 import { readFile } from "node:fs/promises";
+import { attachCommand } from "@konductor/agents";
 import { readConfig } from "@konductor/store";
 import { fmt, header, table } from "../ui/format.js";
-import { formatHostRequestError, hostFetch, parseFlag } from "./host-client.js";
+import { ensureHostRunning, formatHostRequestError, hostFetch, parseFlag } from "./host-client.js";
 
 type AgentRow = {
   slug: string;
   run_id: string;
   adapter_id: string;
   adapter_title: string;
-  transport: string;
-  session_name: string | null;
-  pane_id: string | null;
+  provider: string | null;
+  model: string | null;
+  session_name: string;
+  window_id: string;
+  pane_id: string;
+  attach_command: string;
   agent_status: string;
   reason: string;
   cwd: string | null;
@@ -22,9 +26,9 @@ type AgentRow = {
 
 function usage(): never {
   console.error("Usage:");
-  console.error("  konductor agent start [--adapter <id>] [--profile <id>] [--slug <name>]");
+  console.error("  konductor agent start [--profile <id>] [--slug <name>] [--model <id>] [--provider <id>]");
   console.error("                        (--task <text> | --task-file <path>)");
-  console.error("                        [--packs <a,b>] [--feature <id>] [--worktree] [--headless]");
+  console.error("                        [--packs <a,b>] [--feature <id>] [--worktree]");
   console.error("  konductor agent list");
   console.error("  konductor agent send <slug> <message>");
   console.error("  konductor agent read <slug> [--scrollback] [--lines <n>]");
@@ -90,6 +94,13 @@ async function start(cwd: string, args: string[]): Promise<void> {
   const prompt = taskFile ? await readFile(taskFile, "utf-8") : taskText!;
 
   const projectId = await currentProjectId(cwd);
+  try {
+    await ensureHostRunning(cwd);
+  } catch (error) {
+    console.error(`${fmt.red("✗")} Could not start Konductor host.`);
+    console.error(`  ${fmt.dim(formatHostRequestError(error))}`);
+    process.exit(1);
+  }
   const packs = parseFlag(args, "--packs");
   const body = {
     profile_id: parseFlag(args, "--profile"),
@@ -97,7 +108,8 @@ async function start(cwd: string, args: string[]): Promise<void> {
     prompt_packs: packs ? packs.split(",").map((p) => p.trim()).filter(Boolean) : undefined,
     feature_item_id: parseFlag(args, "--feature") ?? null,
     slug: parseFlag(args, "--slug"),
-    mode: args.includes("--headless") ? ("headless" as const) : undefined,
+    provider: parseFlag(args, "--provider"),
+    model: parseFlag(args, "--model"),
     worktree: args.includes("--worktree") ? true : undefined,
     source: "cli" as const,
   };
@@ -111,23 +123,27 @@ async function start(cwd: string, args: string[]): Promise<void> {
     id: string;
     slug: string;
     adapter_id: string;
-    transport: string;
+    provider: string | null;
+    model: string | null;
     pane_id: string | null;
+    window_id: string | null;
     session_name: string | null;
     working_directory?: string;
     branch: string | null;
   }>(res, "Could not start agent");
 
   console.log(`${fmt.green("✓")} Agent ${fmt.bold(run.slug)} started`);
-  console.log(`  ${fmt.dim("run id:")}    ${run.id}`);
-  console.log(`  ${fmt.dim("adapter:")}   ${run.adapter_id}`);
-  console.log(`  ${fmt.dim("transport:")} ${run.transport}`);
-  if (run.pane_id) console.log(`  ${fmt.dim("pane:")}      ${run.pane_id}`);
-  if (run.working_directory) console.log(`  ${fmt.dim("cwd:")}       ${run.working_directory}`);
-  if (run.branch) console.log(`  ${fmt.dim("branch:")}    ${run.branch}`);
+  console.log(`  ${fmt.dim("run id:")}   ${run.id}`);
+  console.log(`  ${fmt.dim("harness:")}  ${run.adapter_id} · ${run.provider ?? "default"} · ${run.model ?? "default model"}`);
+  if (run.pane_id) console.log(`  ${fmt.dim("tmux:")}     ${run.session_name} window ${run.window_id} pane ${run.pane_id}`);
+  if (run.working_directory) console.log(`  ${fmt.dim("cwd:")}      ${run.working_directory}`);
+  if (run.branch) console.log(`  ${fmt.dim("branch:")}   ${run.branch}`);
   console.log();
-  console.log(`  ${fmt.dim("watch:")}  konductor agent read ${run.slug}`);
+  console.log(`  ${fmt.dim("watch:")}     konductor agent read ${run.slug}`);
   console.log(`  ${fmt.dim("take over:")} konductor agent attach ${run.slug}`);
+  if (run.session_name && run.window_id) {
+    console.log(`  ${fmt.dim("or:")}        ${attachCommand(run.session_name, run.window_id)}`);
+  }
   console.log();
 }
 
@@ -145,14 +161,20 @@ async function list(cwd: string): Promise<void> {
       agents.map((agent) => [
         fmt.bold(agent.slug),
         agent.adapter_id,
+        agent.model ? `${agent.provider ?? ""}/${agent.model}`.replace(/^\//, "") : fmt.dim(agent.provider ?? "default"),
         statusColor(agent.agent_status),
-        agent.pane_id ?? (agent.transport === "headless" ? "headless" : "-"),
+        `${agent.window_id} ${fmt.dim(agent.pane_id)}`,
         agent.branch ?? "-",
         agent.feature_item_title ?? fmt.dim("direct task"),
       ]),
-      ["agent", "adapter", "status", "pane", "branch", "task"],
+      ["agent", "adapter", "model", "status", "tmux", "branch", "task"],
     ),
   );
+  console.log();
+  console.log(`${fmt.dim("Attach to one:")} konductor agent attach <agent>`);
+  for (const agent of agents) {
+    console.log(`  ${fmt.dim(agent.slug + ":")} ${agent.attach_command}`);
+  }
   console.log();
 }
 
@@ -204,6 +226,7 @@ async function status(cwd: string, args: string[], verbose: boolean): Promise<vo
     reason: string;
     matched_pattern: string | null;
     pane_id: string | null;
+    attach_command: string;
     adapter_id: string;
     screen_tail: string;
   }>(res, `Could not explain "${slug}"`);
@@ -214,6 +237,7 @@ async function status(cwd: string, args: string[], verbose: boolean): Promise<vo
   console.log(`  ${fmt.dim("pattern:")} ${detail.matched_pattern ?? fmt.dim("none")}`);
   console.log(`  ${fmt.dim("adapter:")} ${detail.adapter_id}`);
   console.log(`  ${fmt.dim("pane:")}    ${detail.pane_id ?? "-"}`);
+  console.log(`  ${fmt.dim("attach:")}  ${detail.attach_command}`);
   console.log(`\n${fmt.dim("screen tail:")}`);
   console.log(detail.screen_tail);
   console.log();
@@ -230,27 +254,26 @@ async function stop(cwd: string, args: string[]): Promise<void> {
 /**
  * Hand the terminal to the operator.
  *
- * This replaces the CLI process with tmux rather than spawning it, so the operator
- * gets a real attached session and Konductor is out of the way entirely.
+ * Attaches to the project's session and lands on the agent's window — the same
+ * command the dashboard shows for copy-pasting. Konductor stays out of the way:
+ * tmux inherits the terminal and this process just waits for it to detach.
  */
 async function attach(cwd: string, args: string[]): Promise<void> {
   const [slug] = args;
   const config = await readConfig(cwd);
   const session = config?.host?.tmux_session ?? "konductor";
 
+  let argv = ["tmux", "attach-session", "-t", `=${session}`];
   let target = session;
   if (slug) {
     const res = await hostFetch(cwd, `/agents/${encodeURIComponent(slug)}`);
     const agent = await hostJson<AgentRow>(res, `Could not find "${slug}"`);
-    if (!agent.pane_id) {
-      console.error(`${fmt.red("✗")} Agent "${slug}" runs headless and has no pane to attach to.`);
-      process.exit(1);
-    }
-    target = agent.pane_id;
+    argv = ["tmux", "attach-session", "-t", `=${agent.session_name}`, ";", "select-window", "-t", agent.window_id];
+    target = `${agent.session_name} window ${agent.window_id} (${slug})`;
   }
 
   console.log(`${fmt.dim("attaching to")} ${target} ${fmt.dim("— detach with Ctrl-b d")}\n`);
-  const proc = Bun.spawn(["tmux", "attach-session", "-t", target], {
+  const proc = Bun.spawn(argv, {
     stdin: "inherit",
     stdout: "inherit",
     stderr: "inherit",

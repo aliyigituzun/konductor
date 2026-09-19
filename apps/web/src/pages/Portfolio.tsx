@@ -1,117 +1,42 @@
-import React, { useEffect, useState } from "react";
+import React, { useContext, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { fetchRegistry, fetchProject, deleteProject, type ProjectData } from "../lib/registry.js";
 import type { Registry } from "../lib/types.js";
-
-function relativeTime(isoStr: string | null): string {
-  if (!isoStr) return "never";
-  const ms = Date.now() - new Date(isoStr).getTime();
-  const sec = Math.floor(ms / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.floor(hr / 24)}d ago`;
-}
+import { AppContext } from "../AppContext.js";
+import { itemStatusColor, relativeTime } from "../styles/ui.js";
+import {
+  ProjectProfileSwitcher,
+  type ProjectProfilePreview,
+} from "../components/ProjectProfileSwitcher.js";
+import "./Portfolio.css";
+import { ConfigurationDialog } from "../components/ConfigurationDialog.js";
 
 function stateColor(state: string): string {
-  switch (state) {
-    case "in_progress": return "#0284c7";
-    case "done": return "var(--success)";
-    case "blocked": return "var(--danger)";
-    case "paused": return "var(--warning)";
-    default: return "var(--text-tertiary)";
-  }
+  if (state === "paused") return "var(--warning)";
+  return itemStatusColor(state);
 }
 
-const s: Record<string, React.CSSProperties> = {
-  page: { padding: "24px 32px", maxWidth: 1200, margin: "0 auto" },
-  title: { fontSize: 24, fontWeight: 600, marginBottom: 4 },
-  subtitle: { fontSize: 13, color: "var(--text-tertiary)", marginBottom: 24 },
-  table: {
-    width: "100%",
-    borderCollapse: "collapse",
-    background: "var(--bg-canvas)",
-    border: "1px solid var(--border-subtle)",
-    borderRadius: "var(--radius-md)",
-    overflow: "hidden",
-    boxShadow: "var(--shadow-soft)",
-    fontSize: 13,
-  },
-  th: {
-    padding: "10px 16px",
-    textAlign: "left",
-    fontSize: 11,
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: "0.05em",
-    color: "var(--text-tertiary)",
-    background: "var(--bg-panel)",
-    borderBottom: "1px solid var(--border-subtle)",
-  },
-  td: {
-    padding: "10px 16px",
-    borderBottom: "1px solid var(--border-subtle)",
-    color: "var(--text-primary)",
-    verticalAlign: "middle",
-  },
-  link: {
-    color: "var(--text-primary)",
-    fontWeight: 500,
-    textDecoration: "none",
-  },
-  loading: { color: "var(--text-tertiary)", fontSize: 13, padding: "24px 0" },
-  deleteBtn: {
-    background: "none",
-    border: "none",
-    cursor: "pointer",
-    color: "var(--text-tertiary)",
-    padding: "2px 6px",
-    borderRadius: 4,
-    fontSize: 14,
-    lineHeight: 1,
-    transition: "color 0.15s",
-  },
-  empty: {
-    textAlign: "center",
-    padding: "48px 24px",
-    color: "var(--text-tertiary)",
-    fontSize: 13,
-  },
-  infoIcon: {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    color: "var(--text-tertiary)",
-    borderRadius: "50%",
-    padding: 2,
-    transition: "color 0.15s",
-    lineHeight: 1,
-  },
-  movedBadge: {
-    marginLeft: 8,
-    fontSize: 11,
-    fontWeight: 600,
-    color: "var(--warning)",
-    border: "1px solid var(--warning)",
-    borderRadius: 4,
-    padding: "1px 6px",
-    whiteSpace: "nowrap",
-    cursor: "help",
-  },
-};
-
 export function Portfolio() {
+  const { setProjectProfileName, setProjectProfileId } = useContext(AppContext);
   const [registry, setRegistry] = useState<Registry | null>(null);
   const [projects, setProjects] = useState<Map<string, ProjectData>>(new Map());
   const [loading, setLoading] = useState(true);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [activeProfileId, setActiveProfileId] = useState("personal");
+  const [profiles, setProfiles] = useState<ProjectProfilePreview[]>([
+    { id: "personal", name: "Personal", color: "#2563eb", projectIds: [] },
+  ]);
+  const [configurationOpen, setConfigurationOpen] = useState(false);
 
   useEffect(() => {
     fetchRegistry()
       .then(async (reg) => {
         setRegistry(reg);
+        setProfiles((current) => current.map((profile) =>
+          profile.id === "personal"
+            ? { ...profile, projectIds: reg.projects.map((project) => project.id) }
+            : profile,
+        ));
         const entries = await Promise.all(
           reg.projects.map(async (p) => {
             try {
@@ -122,145 +47,145 @@ export function Portfolio() {
             }
           })
         );
-        const map = new Map(entries.filter((e): e is [string, ProjectData] => e !== null));
-        setProjects(map);
+        setProjects(new Map(entries.filter((e): e is [string, ProjectData] => e !== null)));
       })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
 
   async function handleDelete(id: string, name: string) {
-    if (!window.confirm(`Delete "${name}" from Konductor?\n\nThis will remove the registry entry, .konductor/ directory, and konductor.config.json. This cannot be undone.`)) return;
+    if (!window.confirm(`Delete "${name}" from Konductor?\n\nRemoves the registry entry, .konductor/ and konductor.config.json.`)) return;
     setDeleting(id);
     try {
       await deleteProject(id);
       setRegistry((prev) => prev ? { ...prev, projects: prev.projects.filter((p) => p.id !== id) } : prev);
       setProjects((prev) => { const next = new Map(prev); next.delete(id); return next; });
     } catch (e) {
-      alert(`Failed to delete project: ${String(e)}`);
+      alert(`Delete failed: ${String(e)}`);
     } finally {
       setDeleting(null);
     }
   }
 
+  const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0]!;
+  const profileEntries = (registry?.projects ?? []).filter((entry) => activeProfile.projectIds.includes(entry.id));
+
+  useEffect(() => {
+    setProjectProfileName(activeProfile.name);
+    setProjectProfileId(activeProfile.id);
+  }, [activeProfile.id, activeProfile.name, setProjectProfileId, setProjectProfileName]);
+
+  function createProfile(name: string) {
+    const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "profile";
+    let id = base;
+    let suffix = 2;
+    while (profiles.some((profile) => profile.id === id)) id = `${base}-${suffix++}`;
+    const next: ProjectProfilePreview = {
+      id,
+      name,
+      color: ["#7c3aed", "#c2410c", "#047857", "#be185d"][profiles.length % 4]!,
+      projectIds: [],
+    };
+    setProfiles((current) => [...current, next]);
+    setActiveProfileId(id);
+  }
+
   return (
-    <div style={s.page}>
-      <h1 style={s.title}>Portfolio</h1>
-      <p style={s.subtitle}>All Konductor-initialized projects on this machine</p>
+    <>
+      <div className="k-toolbar">
+        <span className="k-toolbar__title">Projects</span>
+        <span className="k-faint k-num">{loading ? "" : profileEntries.length}</span>
+      </div>
 
-      {loading && <p style={s.loading}>Loading…</p>}
+      <div className="k-page">
+        {loading && <p className="k-loading">Loading…</p>}
 
-      {!loading && (!registry || registry.projects.length === 0) && (
-        <div style={s.empty}>
-          <p>No projects found.</p>
-          <p style={{ marginTop: 8 }}>
-            Run <code>konductor init</code> in a project directory to get started.
-          </p>
-        </div>
-      )}
+        {!loading && profileEntries.length === 0 && (
+          <div className="pf__empty">
+            <span>No projects in {activeProfile.name}.</span>
+            <code>konductor init</code>
+          </div>
+        )}
 
-      {!loading && registry && registry.projects.length > 0 && (
-        <table style={s.table}>
-          <thead>
-            <tr>
-              <th style={s.th}>Project</th>
-              <th style={s.th}>State</th>
-              <th style={s.th}>Phase</th>
-              <th style={s.th}>Blockers</th>
-              <th style={s.th}>Dependencies</th>
-              <th style={s.th}>Agents</th>
-              <th style={s.th}>Last Sync</th>
-              <th style={s.th}>Input Tokens</th>
-              <th style={s.th}>Info</th>
-              <th style={{ ...s.th, width: 40 }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {registry.projects.map((entry) => {
-              const pd = projects.get(entry.id);
-              const snap = pd?.status ?? null;
-              const tel = pd?.telemetry ?? null;
-              const activeRuns = pd?.runs.filter((run) => run.status === "running" || run.status === "queued").length ?? 0;
-              const moved = entry.reachable === false;
-              return (
-                <tr key={entry.id} style={moved ? { opacity: 0.6 } : undefined}>
-                  <td style={s.td}>
-                    <Link to={`/project/${entry.id}`} style={s.link}>
-                      {entry.name}
-                    </Link>
-                    {moved && (
-                      <span style={s.movedBadge} title={`Not found at ${entry.repo_path}`}>
-                        ⚠ moved
-                      </span>
-                    )}
-                  </td>
-                  <td style={{ ...s.td, color: stateColor(snap?.status.state ?? "todo") }}>
-                    {snap?.status.state ?? "—"}
-                  </td>
-                  <td style={{ ...s.td, color: "var(--text-secondary)" }}>
-                    {snap?.status.current_phase_id ?? "—"}
-                  </td>
-                  <td
-                    style={{
-                      ...s.td,
-                      color:
-                        (snap?.issues.blockers.length ?? 0) > 0
-                          ? "var(--danger)"
-                          : "var(--text-secondary)",
-                      fontWeight: (snap?.issues.blockers.length ?? 0) > 0 ? 500 : 400,
-                    }}
-                  >
-                    {snap?.issues.blockers.length ?? "—"}
-                  </td>
-                  <td style={{ ...s.td, color: "var(--text-secondary)" }}>
-                    {snap?.issues.external_dependencies.length ?? "—"}
-                  </td>
-                  <td style={{ ...s.td, color: activeRuns > 0 ? "#0284c7" : "var(--text-secondary)" }}>
-                    {activeRuns}
-                  </td>
-                  <td style={{ ...s.td, color: "var(--text-secondary)" }}>
-                    {relativeTime(entry.last_sync)}
-                  </td>
-                  <td style={{ ...s.td, fontVariantNumeric: "tabular-nums" }}>
-                    {tel?.input_tokens?.toLocaleString() ?? "—"}
-                  </td>
-                  <td style={{ ...s.td, textAlign: "center" }}>
-                    <Link
-                      to={`/project/${entry.id}?info=1`}
-                      style={s.infoIcon}
-                      title="View project paths"
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = "#0284c7"; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLAnchorElement).style.color = "var(--text-tertiary)"; }}
-                    >
-                      <svg width="15" height="15" viewBox="0 0 15 15" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <circle cx="7.5" cy="7.5" r="6.75" stroke="currentColor" strokeWidth="1.5"/>
-                        <circle cx="7.5" cy="4.75" r="1" fill="currentColor"/>
-                        <rect x="6.75" y="7" width="1.5" height="4.25" rx="0.75" fill="currentColor"/>
-                      </svg>
-                    </Link>
-                  </td>
-                  <td style={{ ...s.td, textAlign: "center" }}>
-                    <button
-                      style={{
-                        ...s.deleteBtn,
-                        opacity: deleting === entry.id ? 0.4 : 1,
-                        color: deleting === entry.id ? "var(--text-tertiary)" : undefined,
-                      }}
-                      disabled={deleting === entry.id}
-                      title={`Delete ${entry.name}`}
-                      onClick={() => handleDelete(entry.id, entry.name)}
-                      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "var(--danger)"; }}
-                      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.color = "var(--text-tertiary)"; }}
-                    >
-                      {deleting === entry.id ? "…" : "✕"}
-                    </button>
-                  </td>
+        {!loading && profileEntries.length > 0 && (
+          <div className="k-table-scroll">
+            <table className="k-table">
+              <thead>
+                <tr>
+                  <th>Project</th>
+                  <th>State</th>
+                  <th>Phase</th>
+                  <th className="k-num">Blockers</th>
+                  <th className="k-num k-hide-sm">Deps</th>
+                  <th className="k-num">Agents</th>
+                  <th>Sync</th>
+                  <th className="k-num k-hide-sm">Input tokens</th>
+                  <th style={{ width: 64 }} />
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
-    </div>
+              </thead>
+              <tbody>
+                {profileEntries.map((entry) => {
+                  const pd = projects.get(entry.id);
+                  const snap = pd?.status ?? null;
+                  const tel = pd?.telemetry ?? null;
+                  const activeRuns = pd?.runs.filter((run) => run.status === "running" || run.status === "queued").length ?? 0;
+                  const moved = entry.reachable === false;
+                  const blockers = snap?.issues.blockers.length ?? 0;
+                  return (
+                    <tr key={entry.id} style={moved ? { opacity: 0.6 } : undefined}>
+                      <td>
+                        <Link to={`/project/${entry.id}`} className="pf__name">{entry.name}</Link>
+                        {moved && <span className="pf__moved" title={`Not found at ${entry.repo_path}`}>moved</span>}
+                      </td>
+                      <td style={{ color: stateColor(snap?.status.state ?? "todo") }}>{snap?.status.state ?? "—"}</td>
+                      <td className="k-muted">{snap?.status.current_phase_id ?? "—"}</td>
+                      <td className="k-num" style={{ color: blockers > 0 ? "var(--danger)" : "var(--text-secondary)", fontWeight: blockers > 0 ? 600 : 400 }}>
+                        {snap ? blockers : "—"}
+                      </td>
+                      <td className="k-num k-muted k-hide-sm">{snap?.issues.external_dependencies.length ?? "—"}</td>
+                      <td className="k-num" style={{ color: activeRuns > 0 ? "var(--accent)" : "var(--text-secondary)" }}>{activeRuns}</td>
+                      <td className="k-muted">{relativeTime(entry.last_sync)}</td>
+                      <td className="k-num k-hide-sm">{tel?.input_tokens?.toLocaleString() ?? "—"}</td>
+                      <td>
+                        <div className="pf__actions">
+                          <Link to={`/project/${entry.id}?info=1`} className="k-btn k-btn--ghost k-btn--icon k-btn--sm k-mono" title="Paths">i</Link>
+                          <button
+                            type="button"
+                            className="k-btn k-btn--ghost k-btn--icon k-btn--sm pf__delete"
+                            disabled={deleting === entry.id}
+                            title={`Delete ${entry.name}`}
+                            onClick={() => handleDelete(entry.id, entry.name)}
+                          >
+                            {deleting === entry.id ? "…" : "✕"}
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <ProjectProfileSwitcher
+        activeProfileId={activeProfileId}
+        profiles={profiles}
+        onSelect={setActiveProfileId}
+        onCreate={createProfile}
+        onConfigure={() => setConfigurationOpen(true)}
+      />
+      <ConfigurationDialog
+        open={configurationOpen}
+        scope={{
+          type: "project_space",
+          id: activeProfile.id,
+          label: activeProfile.name,
+          projectIds: activeProfile.projectIds,
+        }}
+        onClose={() => setConfigurationOpen(false)}
+      />
+    </>
   );
 }
