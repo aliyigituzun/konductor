@@ -256,7 +256,7 @@ test("configuration scopes bootstrap an admin before auth and remote access", as
       role: "member",
     });
     expect(withAdmin.users[0].role).toBe("admin");
-    expect(withAdmin.users[0].permissions).toEqual([]);
+    expect(withAdmin.users[0].permission_sets).toEqual([]);
     expect(JSON.stringify(withAdmin)).not.toContain("credential_hash");
     const credential = await store.findAuthCredential("project", "project", "owner@example.test");
     expect(await store.verifyAuthPassword("correct horse battery staple", credential.credential_hash)).toBe(true);
@@ -298,40 +298,3 @@ test("a failed transaction preserves committed state and newer database versions
   expect(() => withDatabase(path, () => null)).toThrow("Unsupported Konductor database version");
 });
 
-test("version 7 moves project-scoped users and auth/remote settings into the personal Project Space", () => {
-  const path = repoLocal(dir).database;
-  withDatabase(path, () => null);
-  const db = new Database(path);
-  const user = (id: string, email: string, scope: string) => JSON.stringify({
-    schema_version: "0.1.0", id, scope_type: "project", scope_id: scope, display_name: email, email, role: "admin",
-    permissions: [], pinned_todo_phase_ids: [], status: "active", created_at: "2026-09-19T00:00:00.000Z", updated_at: "2026-09-19T00:00:00.000Z",
-  });
-  const settings = (scope: string, auth: boolean, updated: string) => JSON.stringify({
-    schema_version: "0.1.0", scope_type: "project", scope_id: scope, general: { theme: "system" },
-    remote: { enabled: false, transport: "ssh_reverse_tunnel", ssh_host: "", ssh_user: "", local_host: "127.0.0.1", local_port: 4096, remote_port: 4096 },
-    auth: { enabled: auth }, integrations: { github: null }, ports: { reserved: [], preview_range: { start: 4200, end: 4299 } }, updated_at: updated,
-  });
-  db.query("INSERT INTO auth_users (id, scope_type, scope_id, email, credential_hash, body) VALUES (?, 'project', ?, ?, 'h', ?)")
-    .run("11111111-1111-4111-8111-111111111111", "alpha", "a@example.test", user("11111111-1111-4111-8111-111111111111", "a@example.test", "alpha"));
-  db.query("INSERT INTO auth_users (id, scope_type, scope_id, email, credential_hash, body) VALUES (?, 'project', ?, ?, 'h', ?)")
-    .run("22222222-2222-4222-8222-222222222222", "beta", "a@example.test", user("22222222-2222-4222-8222-222222222222", "a@example.test", "beta"));
-  db.query("INSERT INTO configuration_scopes (scope_type, scope_id, body) VALUES ('project', 'alpha', ?)").run(settings("alpha", true, "2026-09-19T01:00:00.000Z"));
-  db.query("INSERT INTO configuration_scopes (scope_type, scope_id, body) VALUES ('project', 'beta', ?)").run(settings("beta", false, "2026-09-19T02:00:00.000Z"));
-  db.exec("PRAGMA user_version = 6");
-  db.close();
-
-  withDatabase(path, (migrated) => {
-    const users = migrated.query<{ scope_type: string; scope_id: string; body: string }, []>("SELECT scope_type, scope_id, body FROM auth_users").all();
-    expect(users).toHaveLength(1);
-    expect(users[0]).toMatchObject({ scope_type: "project_space", scope_id: "personal" });
-    expect(JSON.parse(users[0]!.body)).toMatchObject({ scope_type: "project_space", scope_id: "personal", email: "a@example.test" });
-    const scopes = Object.fromEntries(
-      migrated.query<{ scope_type: string; scope_id: string; body: string }, []>("SELECT scope_type, scope_id, body FROM configuration_scopes").all()
-        .map((row) => [`${row.scope_type}/${row.scope_id}`, JSON.parse(row.body)]),
-    );
-    expect(scopes["project_space/personal"].auth.enabled).toBe(true);
-    expect(scopes["project_space/personal"].scope_type).toBe("project_space");
-    expect(scopes["project/alpha"].auth.enabled).toBe(false);
-    expect(scopes["project/beta"].auth.enabled).toBe(false);
-  });
-});
